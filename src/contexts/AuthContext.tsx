@@ -1,10 +1,12 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
-import type { User, Session } from '@supabase/supabase-js'
-import { supabase } from '../lib/supabase'
+import { createContext, useContext, useState, type ReactNode } from 'react'
+
+interface DemoUser {
+  id: string
+  email: string
+}
 
 interface AuthContextType {
-  user: User | null
-  session: Session | null
+  user: DemoUser | null
   loading: boolean
   signIn: (email: string, password: string) => Promise<{ error: string | null }>
   signUp: (email: string, password: string) => Promise<{ error: string | null }>
@@ -13,42 +15,64 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined)
 
-export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<User | null>(null)
-  const [session, setSession] = useState<Session | null>(null)
-  const [loading, setLoading] = useState(true)
-
-  useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session)
-      setUser(session?.user ?? null)
-      setLoading(false)
-    })
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session)
-      setUser(session?.user ?? null)
-    })
-
-    return () => subscription.unsubscribe()
-  }, [])
-
-  const signIn = async (email: string, password: string) => {
-    const { error } = await supabase.auth.signInWithPassword({ email, password })
-    return { error: error?.message ?? null }
+function getStoredUsers(): Record<string, string> {
+  try {
+    return JSON.parse(localStorage.getItem('cetm_users') || '{}')
+  } catch {
+    return {}
   }
+}
+
+function saveStoredUsers(users: Record<string, string>) {
+  localStorage.setItem('cetm_users', JSON.stringify(users))
+}
+
+function getStoredSession(): DemoUser | null {
+  try {
+    const raw = localStorage.getItem('cetm_session')
+    return raw ? JSON.parse(raw) : null
+  } catch {
+    return null
+  }
+}
+
+export function AuthProvider({ children }: { children: ReactNode }) {
+  const [user, setUser] = useState<DemoUser | null>(getStoredSession)
 
   const signUp = async (email: string, password: string) => {
-    const { error } = await supabase.auth.signUp({ email, password })
-    return { error: error?.message ?? null }
+    const users = getStoredUsers()
+    if (users[email]) {
+      return { error: 'An account with this email already exists' }
+    }
+    users[email] = password
+    saveStoredUsers(users)
+    const demoUser = { id: `user-${Date.now()}`, email }
+    localStorage.setItem('cetm_session', JSON.stringify(demoUser))
+    setUser(demoUser)
+    return { error: null }
+  }
+
+  const signIn = async (email: string, password: string) => {
+    const users = getStoredUsers()
+    if (!users[email]) {
+      return { error: 'No account found with this email' }
+    }
+    if (users[email] !== password) {
+      return { error: 'Invalid password' }
+    }
+    const demoUser = { id: `user-${email}`, email }
+    localStorage.setItem('cetm_session', JSON.stringify(demoUser))
+    setUser(demoUser)
+    return { error: null }
   }
 
   const signOut = async () => {
-    await supabase.auth.signOut()
+    localStorage.removeItem('cetm_session')
+    setUser(null)
   }
 
   return (
-    <AuthContext.Provider value={{ user, session, loading, signIn, signUp, signOut }}>
+    <AuthContext.Provider value={{ user, loading: false, signIn, signUp, signOut }}>
       {children}
     </AuthContext.Provider>
   )
