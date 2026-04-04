@@ -8,10 +8,12 @@ interface EventDetailsStepProps {
   eventType: EventType
   dateStart: string
   dateEnd: string
+  travelBudget: number
   onNameChange: (v: string) => void
   onEventTypeChange: (v: EventType) => void
   onDateStartChange: (v: string) => void
   onDateEndChange: (v: string) => void
+  onTravelBudgetChange: (v: number) => void
   onNext: () => void
 }
 
@@ -28,13 +30,15 @@ export function EventDetailsStep({
   eventType,
   dateStart,
   dateEnd,
+  travelBudget,
   onNameChange,
   onEventTypeChange,
   onDateStartChange,
   onDateEndChange,
+  onTravelBudgetChange,
   onNext,
 }: EventDetailsStepProps) {
-  const canProceed = name.trim() && dateStart && dateEnd && dateEnd >= dateStart
+  const canProceed = name.trim() && dateStart && dateEnd && dateEnd >= dateStart && travelBudget > 0
 
   return (
     <div className="max-w-lg mx-auto">
@@ -57,6 +61,20 @@ export function EventDetailsStep({
           value={eventType}
           onChange={(e) => onEventTypeChange(e.target.value as EventType)}
         />
+
+        <Input
+          id="travelBudget"
+          label="Current Travel Reimbursement Budget (&euro;)"
+          type="number"
+          min={1}
+          placeholder="e.g. 15000"
+          value={travelBudget || ''}
+          onChange={(e) => onTravelBudgetChange(parseInt(e.target.value) || 0)}
+        />
+
+        <p className="text-xs text-slate-500">
+          Enter your current estimated budget for all participants' travel reimbursements so we can calculate your potential savings.
+        </p>
 
         <div className="grid grid-cols-2 gap-4">
           <Input

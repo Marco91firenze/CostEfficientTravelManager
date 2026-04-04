@@ -27,6 +27,7 @@ export function NewProjectPage() {
   const [eventType, setEventType] = useState<EventType>('teambuilding')
   const [dateStart, setDateStart] = useState('')
   const [dateEnd, setDateEnd] = useState('')
+  const [travelBudget, setTravelBudget] = useState(0)
 
   // Step 2 state
   const [offices, setOffices] = useState<Office[]>([
@@ -84,10 +85,11 @@ export function NewProjectPage() {
       offices: offices.filter((o) => o.cityId),
       status: 'completed',
       totalParticipants: offices.reduce((s, o) => s + o.participantCount, 0),
+      travelBudget,
     }))
 
     navigate(`/app/projects/${projectId}`)
-  }, [offices, dateStart, dateEnd, name, eventType, navigate])
+  }, [offices, dateStart, dateEnd, name, eventType, travelBudget, navigate])
 
   return (
     <div>
@@ -100,10 +102,12 @@ export function NewProjectPage() {
             eventType={eventType}
             dateStart={dateStart}
             dateEnd={dateEnd}
+            travelBudget={travelBudget}
             onNameChange={setName}
             onEventTypeChange={setEventType}
             onDateStartChange={setDateStart}
             onDateEndChange={setDateEnd}
+            onTravelBudgetChange={setTravelBudget}
             onNext={() => setStep(2)}
           />
         )}

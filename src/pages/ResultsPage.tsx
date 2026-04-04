@@ -13,12 +13,18 @@ export function ResultsPage() {
   const { id } = useParams<{ id: string }>()
   const [result, setResult] = useState<OptimizationResult | null>(null)
   const [isPaid, setIsPaid] = useState(false)
+  const [travelBudget, setTravelBudget] = useState(0)
 
   useEffect(() => {
     if (!id) return
     const stored = sessionStorage.getItem(`result-${id}`)
     if (stored) {
       setResult(JSON.parse(stored))
+    }
+    const projectStored = sessionStorage.getItem(`project-${id}`)
+    if (projectStored) {
+      const project = JSON.parse(projectStored)
+      setTravelBudget(project.travelBudget || 0)
     }
     const paid = sessionStorage.getItem(`paid-${id}`)
     if (paid === 'true') {
@@ -72,7 +78,7 @@ export function ResultsPage() {
 
       <ResultsSummary result={result} isPaid={isPaid} />
 
-      {!isPaid && <BlurOverlay savingsVsWorst={result.savingsVsWorst} onUnlock={handleUnlock} />}
+      {!isPaid && <BlurOverlay savingsVsBudget={Math.max(0, travelBudget - result.totalCost)} onUnlock={handleUnlock} />}
 
       <CityRankingTable rankings={result.cityRankings} isPaid={isPaid} />
 

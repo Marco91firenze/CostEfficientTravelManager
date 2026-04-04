@@ -30,16 +30,14 @@ export function CityRankingTable({ rankings, isPaid }: CityRankingTableProps) {
           <thead>
             <tr className="bg-slate-50 text-left">
               <th className="px-4 py-3 text-xs font-semibold text-slate-500 uppercase">#</th>
-              <th className="px-4 py-3 text-xs font-semibold text-slate-500 uppercase">City</th>
+              {isPaid && <th className="px-4 py-3 text-xs font-semibold text-slate-500 uppercase">City</th>}
               <th className="px-4 py-3 text-xs font-semibold text-slate-500 uppercase">Total Cost</th>
               <th className="px-4 py-3 text-xs font-semibold text-slate-500 uppercase">Avg / Person</th>
               <th className="px-4 py-3 text-xs font-semibold text-slate-500 uppercase">Best Date</th>
             </tr>
           </thead>
           <tbody>
-            {displayed.map((city, i) => {
-              const blurRow = !isPaid && i < 3
-              return (
+            {displayed.map((city, i) => (
                 <tr key={city.cityId} className="border-t border-slate-100 hover:bg-slate-50">
                   <td className="px-4 py-3 text-sm">
                     {i === 0 && isPaid ? (
@@ -48,21 +46,22 @@ export function CityRankingTable({ rankings, isPaid }: CityRankingTableProps) {
                       <span className="text-slate-500">{i + 1}</span>
                     )}
                   </td>
-                  <td className={`px-4 py-3 text-sm font-medium text-slate-900 ${blurRow ? 'blur-md select-none' : ''}`}>
-                    {city.cityName}, {city.country}
-                  </td>
-                  <td className={`px-4 py-3 text-sm text-slate-700 ${blurRow ? 'blur-md select-none' : ''}`}>
+                  {isPaid && (
+                    <td className="px-4 py-3 text-sm font-medium text-slate-900">
+                      {city.cityName}, {city.country}
+                    </td>
+                  )}
+                  <td className="px-4 py-3 text-sm text-slate-700">
                     {formatCurrency(city.totalCost)}
                   </td>
-                  <td className={`px-4 py-3 text-sm text-slate-700 ${blurRow ? 'blur-md select-none' : ''}`}>
+                  <td className="px-4 py-3 text-sm text-slate-700">
                     {formatCurrency(city.averageCostPerPerson)}
                   </td>
-                  <td className={`px-4 py-3 text-sm text-slate-500 ${blurRow ? 'blur-md select-none' : ''}`}>
+                  <td className="px-4 py-3 text-sm text-slate-500">
                     {formatDate(city.bestDate)}
                   </td>
                 </tr>
-              )
-            })}
+            ))}
           </tbody>
         </table>
       </div>
