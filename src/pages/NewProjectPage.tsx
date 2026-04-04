@@ -1,15 +1,14 @@
-import { useState, useCallback } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { StepIndicator } from '../components/wizard/StepIndicator'
 import { EventDetailsStep } from '../components/wizard/EventDetailsStep'
 import { OfficeMapStep } from '../components/wizard/OfficeMapStep'
 import { ProcessingStep } from '../components/wizard/ProcessingStep'
 import { Card } from '../components/ui/Card'
-import { runOptimization } from '../engine/optimizer'
 import { CITIES } from '../engine/cities'
+import { isKiwiConfigured } from '../lib/kiwi'
 import type { EventType, Office } from '../types/project'
 import type { CandidateCity } from '../types/city'
-import type { OptimizationResult } from '../types/results'
 
 const STEPS = ['Event Details', 'Office Mapping', 'Processing']
 
@@ -35,6 +34,14 @@ export function NewProjectPage() {
     { id: genId(), cityId: '', cityName: '', countryCode: '', participantCount: 0 },
   ])
 
+  // Step 3 state
+  const [completedRoutes, setCompletedRoutes] = useState(0)
+  const [totalRoutes, setTotalRoutes] = useState(0)
+  const [currentCity, setCurrentCity] = useState('')
+  const [processingStatus, setProcessingStatus] = useState<'searching' | 'complete' | 'error'>('searching')
+  const [processingError, setProcessingError] = useState('')
+  const optimizationStarted = useRef(false)
+
   const addOffice = () => {
     setOffices((prev) => [
       ...prev,
@@ -58,38 +65,66 @@ export function NewProjectPage() {
     })
   }
 
-  // Estimate total combinations for the animation
-  const candidateCount = CITIES.length - offices.filter((o) => o.cityId).length
-  const dateCount = dateStart && dateEnd
-    ? Math.max(1, Math.floor((new Date(dateEnd).getTime() - new Date(dateStart).getTime()) / (1000 * 60 * 60 * 24)) + 1)
-    : 1
-  const totalCombinations = candidateCount * dateCount * offices.filter((o) => o.cityId).length
+  const validOffices = offices.filter((o) => o.cityId)
+  const candidateCount = CITIES.length - validOffices.length
+  const estimatedRoutes = candidateCount * validOffices.length
 
-  const handleProcessingComplete = useCallback(() => {
-    const projectId = `proj-${Date.now()}`
-    const result: OptimizationResult = runOptimization(
-      projectId,
-      offices.filter((o) => o.cityId),
-      dateStart,
-      dateEnd
-    )
+  // Run optimization when step 3 is reached
+  useEffect(() => {
+    if (step !== 3 || optimizationStarted.current) return
+    optimizationStarted.current = true
 
-    // Store result in sessionStorage for the results page
-    sessionStorage.setItem(`result-${projectId}`, JSON.stringify(result))
-    sessionStorage.setItem(`project-${projectId}`, JSON.stringify({
-      id: projectId,
-      name,
-      eventType,
-      dateRangeStart: dateStart,
-      dateRangeEnd: dateEnd,
-      offices: offices.filter((o) => o.cityId),
-      status: 'completed',
-      totalParticipants: offices.reduce((s, o) => s + o.participantCount, 0),
-      travelBudget,
-    }))
+    if (!isKiwiConfigured()) {
+      setProcessingStatus('error')
+      setProcessingError('Kiwi API key is not configured. Add VITE_KIWI_API_KEY to your .env file and restart the dev server.')
+      return
+    }
 
-    navigate(`/app/projects/${projectId}`)
-  }, [offices, dateStart, dateEnd, name, eventType, travelBudget, navigate])
+    setTotalRoutes(estimatedRoutes)
+
+    const run = async () => {
+      try {
+        // Dynamic import to keep the initial bundle lighter
+        const { runOptimization } = await import('../engine/optimizer')
+        const result = await runOptimization(
+          `proj-${Date.now()}`,
+          validOffices,
+          dateStart,
+          dateEnd,
+          travelBudget,
+          (completed, total, city) => {
+            setCompletedRoutes(completed)
+            setTotalRoutes(total)
+            setCurrentCity(city)
+          }
+        )
+
+        setProcessingStatus('complete')
+
+        // Store result
+        sessionStorage.setItem(`result-${result.projectId}`, JSON.stringify(result))
+        sessionStorage.setItem(`project-${result.projectId}`, JSON.stringify({
+          id: result.projectId,
+          name,
+          eventType,
+          dateRangeStart: dateStart,
+          dateRangeEnd: dateEnd,
+          offices: validOffices,
+          status: 'completed',
+          totalParticipants: validOffices.reduce((s, o) => s + o.participantCount, 0),
+          travelBudget,
+        }))
+
+        // Navigate to results after a brief pause
+        setTimeout(() => navigate(`/app/projects/${result.projectId}`), 800)
+      } catch (err) {
+        setProcessingStatus('error')
+        setProcessingError(err instanceof Error ? err.message : 'An unexpected error occurred')
+      }
+    }
+
+    run()
+  }, [step, dateStart, dateEnd, estimatedRoutes, eventType, name, navigate, travelBudget, validOffices])
 
   return (
     <div>
@@ -119,15 +154,24 @@ export function NewProjectPage() {
             onRemoveOffice={removeOffice}
             onUpdateOffice={updateOffice}
             onCitySelect={handleCitySelect}
-            onNext={() => setStep(3)}
+            onNext={() => {
+              optimizationStarted.current = false
+              setCompletedRoutes(0)
+              setProcessingStatus('searching')
+              setProcessingError('')
+              setStep(3)
+            }}
             onBack={() => setStep(1)}
           />
         )}
 
         {step === 3 && (
           <ProcessingStep
-            totalCombinations={totalCombinations}
-            onComplete={handleProcessingComplete}
+            completedRoutes={completedRoutes}
+            totalRoutes={totalRoutes}
+            currentCity={currentCity}
+            status={processingStatus}
+            error={processingError}
           />
         )}
       </Card>

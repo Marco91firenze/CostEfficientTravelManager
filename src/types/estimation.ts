@@ -11,11 +11,11 @@ export interface RouteEstimate {
   estimatedDurationMinutes: number
   participantCount: number
   totalCostForRoute: number
-}
-
-export interface DateMultiplier {
-  date: string
-  dayOfWeek: number
-  multiplier: number
-  advanceBookingDays: number
+  bookingLink: string
+  fallbackSearchLink: string
+  carrier: string
+  stops: number
+  departureDate: string
+  returnDate: string
+  isRealPrice: boolean
 }

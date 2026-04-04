@@ -66,7 +66,7 @@ export function ResultsPage() {
           <h1 className="text-2xl font-bold text-slate-900">Optimization Results</h1>
           <p className="text-slate-600 flex items-center gap-2 mt-1">
             <TrendingDown className="h-4 w-4 text-green-600" />
-            {result.combinationsEvaluated.toLocaleString()} combinations evaluated
+            {result.routesQueried.toLocaleString()} routes queried with live pricing
           </p>
         </div>
         {isPaid && (

@@ -8,6 +8,7 @@ export interface CityRanking {
   averageCostPerPerson: number
   bestDate: string
   routeBreakdown: RouteEstimate[]
+  hasIncompleteData: boolean
 }
 
 export interface BookingRecommendation {
@@ -20,6 +21,11 @@ export interface BookingRecommendation {
   totalCostForOffice: number
   suggestedDeparture: string
   suggestedReturn: string
+  bookingLink: string
+  fallbackSearchLink: string
+  carrier: string
+  stops: number
+  isRealPrice: boolean
 }
 
 export interface OptimizationResult {
@@ -32,6 +38,7 @@ export interface OptimizationResult {
   cityRankings: CityRanking[]
   bookingRecommendations: BookingRecommendation[]
   computedAt: string
-  combinationsEvaluated: number
-  savingsVsWorst: number
+  routesQueried: number
+  savingsVsBudget: number
+  travelBudget: number
 }

@@ -2,114 +2,209 @@ import type { Office } from '../types/project'
 import type { CityRanking, BookingRecommendation, OptimizationResult } from '../types/results'
 import type { RouteEstimate } from '../types/estimation'
 import { CITIES, getCityById } from './cities'
-import { estimateRouteCost } from './costModel'
+import { haversineDistance } from './haversine'
+import { searchRoute, generateGoogleFlightsLink, generateTrainLink, throttledMap } from '../lib/kiwi'
 
-function generateDateRange(start: string, end: string): Date[] {
-  const dates: Date[] = []
-  const current = new Date(start)
-  const endDate = new Date(end)
-  while (current <= endDate) {
-    dates.push(new Date(current))
-    current.setDate(current.getDate() + 1)
-  }
-  return dates
+interface RouteQuery {
+  office: Office
+  destCityId: string
+  destCityName: string
+  destCountry: string
+  destAirportCode: string
+  originAirportCode: string
+  dateFrom: string
+  dateTo: string
 }
 
-function formatDateISO(d: Date): string {
-  return d.toISOString().split('T')[0]
-}
-
-export function runOptimization(
+export async function runOptimization(
   projectId: string,
   offices: Office[],
   dateRangeStart: string,
-  dateRangeEnd: string
-): OptimizationResult {
+  dateRangeEnd: string,
+  travelBudget: number,
+  onProgress?: (completed: number, total: number, currentCity: string) => void
+): Promise<OptimizationResult> {
   const originCityIds = new Set(offices.map(o => o.cityId))
   const candidateCities = CITIES.filter(c => !originCityIds.has(c.id))
-  const dates = generateDateRange(dateRangeStart, dateRangeEnd)
+  const totalParticipants = offices.reduce((sum, o) => sum + o.participantCount, 0)
 
-  if (dates.length === 0) {
-    dates.push(new Date(dateRangeStart))
+  // Build all route queries
+  const routeQueries: RouteQuery[] = []
+  for (const destCity of candidateCities) {
+    for (const office of offices) {
+      const originCity = getCityById(office.cityId)
+      if (!originCity) continue
+      routeQueries.push({
+        office,
+        destCityId: destCity.id,
+        destCityName: destCity.name,
+        destCountry: destCity.country,
+        destAirportCode: destCity.airportCode,
+        originAirportCode: originCity.airportCode,
+        dateFrom: dateRangeStart,
+        dateTo: dateRangeEnd,
+      })
+    }
   }
 
-  const totalParticipants = offices.reduce((sum, o) => sum + o.participantCount, 0)
-  let combinationsEvaluated = 0
+  const totalRoutes = routeQueries.length
 
-  const cityRankings: CityRanking[] = candidateCities.map(destCity => {
-    let bestDateCost = Infinity
-    let bestDate = dates[0]
-    let bestRouteBreakdown: RouteEstimate[] = []
+  // Query Kiwi for all routes with throttling (4 concurrent)
+  const routeResults = await throttledMap(
+    routeQueries,
+    async (query) => {
+      const originCity = getCityById(query.office.cityId)!
+      const destCity = CITIES.find(c => c.id === query.destCityId)!
+      const distanceKm = haversineDistance(originCity.lat, originCity.lng, destCity.lat, destCity.lng)
 
-    for (const date of dates) {
-      let totalCostForDate = 0
-      const routeBreakdown: RouteEstimate[] = []
+      const googleLink = generateGoogleFlightsLink(
+        query.originAirportCode,
+        query.destAirportCode,
+        query.dateFrom,
+        query.dateTo
+      )
+      const trainLink = distanceKm < 700
+        ? generateTrainLink(originCity.name, destCity.name, query.dateFrom)
+        : ''
 
-      for (const office of offices) {
-        const originCity = getCityById(office.cityId)
-        if (!originCity) continue
+      try {
+        const result = await searchRoute(
+          query.originAirportCode,
+          query.destAirportCode,
+          query.dateFrom,
+          query.dateTo
+        )
 
-        const result = estimateRouteCost(originCity, destCity, date)
-        const totalForRoute = result.costPerPerson * office.participantCount
-
-        routeBreakdown.push({
-          originCityId: office.cityId,
-          originCityName: office.cityName,
-          destinationCityId: destCity.id,
-          destinationCityName: destCity.name,
-          distanceKm: result.distanceKm,
-          recommendedMode: result.mode,
-          estimatedCostPerPerson: result.costPerPerson,
-          estimatedDurationMinutes: result.durationMinutes,
-          participantCount: office.participantCount,
-          totalCostForRoute: totalForRoute,
-        })
-
-        totalCostForDate += totalForRoute
-        combinationsEvaluated++
+        if (result) {
+          const route: RouteEstimate = {
+            originCityId: query.office.cityId,
+            originCityName: query.office.cityName,
+            destinationCityId: query.destCityId,
+            destinationCityName: query.destCityName,
+            distanceKm,
+            recommendedMode: result.transportType,
+            estimatedCostPerPerson: result.price,
+            estimatedDurationMinutes: result.durationMinutes,
+            participantCount: query.office.participantCount,
+            totalCostForRoute: result.price * query.office.participantCount,
+            bookingLink: result.bookingLink,
+            fallbackSearchLink: googleLink,
+            carrier: result.carrier,
+            stops: result.stops,
+            departureDate: result.departureDate,
+            returnDate: result.returnDate,
+            isRealPrice: true,
+          }
+          return { query, route, found: true as const }
+        }
+      } catch {
+        // API error - fall through to not-found
       }
 
-      if (totalCostForDate < bestDateCost) {
-        bestDateCost = totalCostForDate
+      // No result from Kiwi - mark as incomplete
+      const fallbackRoute: RouteEstimate = {
+        originCityId: query.office.cityId,
+        originCityName: query.office.cityName,
+        destinationCityId: query.destCityId,
+        destinationCityName: query.destCityName,
+        distanceKm,
+        recommendedMode: 'flight',
+        estimatedCostPerPerson: 0,
+        estimatedDurationMinutes: 0,
+        participantCount: query.office.participantCount,
+        totalCostForRoute: 0,
+        bookingLink: '',
+        fallbackSearchLink: googleLink || trainLink,
+        carrier: 'N/A',
+        stops: 0,
+        departureDate: query.dateFrom,
+        returnDate: query.dateTo,
+        isRealPrice: false,
+      }
+      return { query, route: fallbackRoute, found: false as const }
+    },
+    4,
+    (completed) => {
+      const currentQuery = routeQueries[Math.min(completed, routeQueries.length - 1)]
+      onProgress?.(completed, totalRoutes, currentQuery?.destCityName || '')
+    }
+  )
+
+  // Group routes by destination city
+  const cityRouteMap = new Map<string, { routes: RouteEstimate[]; hasIncomplete: boolean }>()
+  for (const result of routeResults) {
+    const key = result.query.destCityId
+    if (!cityRouteMap.has(key)) {
+      cityRouteMap.set(key, { routes: [], hasIncomplete: false })
+    }
+    const entry = cityRouteMap.get(key)!
+    entry.routes.push(result.route)
+    if (!result.found) {
+      entry.hasIncomplete = true
+    }
+  }
+
+  // Build city rankings
+  const cityRankings: CityRanking[] = []
+  for (const [cityId, { routes, hasIncomplete }] of cityRouteMap) {
+    const destCity = CITIES.find(c => c.id === cityId)!
+    const totalCost = routes.reduce((sum, r) => sum + r.totalCostForRoute, 0)
+
+    // Determine best date from the most common departure date
+    const dateCounts = new Map<string, number>()
+    for (const r of routes) {
+      if (r.isRealPrice) {
+        dateCounts.set(r.departureDate, (dateCounts.get(r.departureDate) || 0) + r.participantCount)
+      }
+    }
+    let bestDate = dateRangeStart
+    let bestDateCount = 0
+    for (const [date, count] of dateCounts) {
+      if (count > bestDateCount) {
+        bestDateCount = count
         bestDate = date
-        bestRouteBreakdown = routeBreakdown
       }
     }
 
-    return {
-      cityId: destCity.id,
+    cityRankings.push({
+      cityId,
       cityName: destCity.name,
       country: destCity.country,
-      totalCost: bestDateCost,
-      averageCostPerPerson: totalParticipants > 0 ? Math.round(bestDateCost / totalParticipants) : 0,
-      bestDate: formatDateISO(bestDate),
-      routeBreakdown: bestRouteBreakdown,
-    }
-  })
+      totalCost,
+      averageCostPerPerson: totalParticipants > 0 ? Math.round(totalCost / totalParticipants) : 0,
+      bestDate,
+      routeBreakdown: routes,
+      hasIncompleteData: hasIncomplete,
+    })
+  }
 
-  cityRankings.sort((a, b) => a.totalCost - b.totalCost)
+  // Sort: complete data first (by cost), incomplete data last (by cost)
+  cityRankings.sort((a, b) => {
+    if (a.hasIncompleteData !== b.hasIncompleteData) {
+      return a.hasIncompleteData ? 1 : -1
+    }
+    return a.totalCost - b.totalCost
+  })
 
   const bestCity = cityRankings[0]
-  const worstCity = cityRankings[cityRankings.length - 1]
 
-  const bookingRecommendations: BookingRecommendation[] = bestCity.routeBreakdown.map(route => {
-    const departDate = new Date(bestCity.bestDate)
-    departDate.setDate(departDate.getDate() - 1)
-    const returnDate = new Date(bestCity.bestDate)
-    returnDate.setDate(returnDate.getDate() + 1)
-
-    return {
-      officeCityId: route.originCityId,
-      officeCityName: route.originCityName,
-      destinationCityName: bestCity.cityName,
-      participantCount: route.participantCount,
-      mode: route.recommendedMode,
-      estimatedCostPerPerson: route.estimatedCostPerPerson,
-      totalCostForOffice: route.totalCostForRoute,
-      suggestedDeparture: formatDateISO(departDate),
-      suggestedReturn: formatDateISO(returnDate),
-    }
-  })
+  // Build booking recommendations for the best city
+  const bookingRecommendations: BookingRecommendation[] = bestCity.routeBreakdown.map(route => ({
+    officeCityId: route.originCityId,
+    officeCityName: route.originCityName,
+    destinationCityName: bestCity.cityName,
+    participantCount: route.participantCount,
+    mode: route.recommendedMode,
+    estimatedCostPerPerson: route.estimatedCostPerPerson,
+    totalCostForOffice: route.totalCostForRoute,
+    suggestedDeparture: route.departureDate,
+    suggestedReturn: route.returnDate,
+    bookingLink: route.bookingLink,
+    fallbackSearchLink: route.fallbackSearchLink,
+    carrier: route.carrier,
+    stops: route.stops,
+    isRealPrice: route.isRealPrice,
+  }))
 
   return {
     projectId,
@@ -121,7 +216,8 @@ export function runOptimization(
     cityRankings,
     bookingRecommendations,
     computedAt: new Date().toISOString(),
-    combinationsEvaluated,
-    savingsVsWorst: worstCity.totalCost - bestCity.totalCost,
+    routesQueried: totalRoutes,
+    savingsVsBudget: Math.max(0, travelBudget - bestCity.totalCost),
+    travelBudget,
   }
 }

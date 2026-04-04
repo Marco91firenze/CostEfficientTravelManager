@@ -25,7 +25,7 @@ export function ResultsSummary({ result, isPaid }: ResultsSummaryProps) {
     },
     {
       icon: PiggyBank,
-      label: 'Total Estimated Cost',
+      label: 'Total Travel Cost',
       value: formatCurrency(result.totalCost),
       blur: !isPaid,
     },
