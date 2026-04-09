@@ -78,7 +78,11 @@ export function ResultsPage() {
 
       <ResultsSummary result={result} isPaid={isPaid} />
 
-      {!isPaid && <BlurOverlay savingsVsBudget={Math.max(0, travelBudget - result.totalCost)} onUnlock={handleUnlock} />}
+      {!isPaid && (() => {
+        const savings = Math.max(0, travelBudget - result.totalCost)
+        const unlockPrice = Math.round(savings * 0.33)
+        return <BlurOverlay savingsVsBudget={savings} unlockPrice={unlockPrice} onUnlock={handleUnlock} />
+      })()}
 
       <CityRankingTable rankings={result.cityRankings} isPaid={isPaid} />
 

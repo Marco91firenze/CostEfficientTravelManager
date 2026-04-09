@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Trophy, ChevronDown, ChevronUp, ExternalLink, Plane, Train, AlertTriangle } from 'lucide-react'
+import { Trophy, ChevronDown, ChevronUp, ExternalLink, Plane, Train, AlertTriangle, Lock } from 'lucide-react'
 import { Card } from '../ui/Card'
 import { Badge } from '../ui/Badge'
 import { formatCurrency } from '../../utils/formatCurrency'
@@ -13,8 +13,6 @@ interface CityRankingTableProps {
 
 export function CityRankingTable({ rankings, isPaid }: CityRankingTableProps) {
   const [expandedCity, setExpandedCity] = useState<string | null>(null)
-  const visibleCount = isPaid ? rankings.length : 5
-  const displayed = rankings.slice(0, visibleCount)
 
   const toggleExpand = (cityId: string) => {
     if (!isPaid) return
@@ -37,15 +35,15 @@ export function CityRankingTable({ rankings, isPaid }: CityRankingTableProps) {
           <thead>
             <tr className="bg-slate-50 text-left">
               <th className="px-4 py-3 text-xs font-semibold text-slate-500 uppercase">#</th>
-              {isPaid && <th className="px-4 py-3 text-xs font-semibold text-slate-500 uppercase">City</th>}
+              <th className="px-4 py-3 text-xs font-semibold text-slate-500 uppercase">City</th>
               <th className="px-4 py-3 text-xs font-semibold text-slate-500 uppercase">Total Cost</th>
               <th className="px-4 py-3 text-xs font-semibold text-slate-500 uppercase">Avg / Person</th>
               <th className="px-4 py-3 text-xs font-semibold text-slate-500 uppercase">Best Date</th>
-              {isPaid && <th className="px-4 py-3 text-xs font-semibold text-slate-500 uppercase w-10"></th>}
+              <th className="px-4 py-3 text-xs font-semibold text-slate-500 uppercase w-10"></th>
             </tr>
           </thead>
           <tbody>
-            {displayed.map((city, i) => (
+            {rankings.map((city, i) => (
               <CityRow
                 key={city.cityId}
                 city={city}
@@ -58,11 +56,6 @@ export function CityRankingTable({ rankings, isPaid }: CityRankingTableProps) {
           </tbody>
         </table>
       </div>
-      {!isPaid && rankings.length > visibleCount && (
-        <div className="p-4 bg-slate-50 text-center text-sm text-slate-500">
-          + {rankings.length - visibleCount} more cities hidden. Unlock to see the full ranking.
-        </div>
-      )}
     </Card>
   )
 }
@@ -93,14 +86,14 @@ function CityRow({
             <span className="text-slate-500">{rank}</span>
           )}
         </td>
-        {isPaid && (
-          <td className="px-4 py-3 text-sm font-medium text-slate-900">
+        <td className="px-4 py-3 text-sm font-medium text-slate-900">
+          <span className={!isPaid ? 'blur-sm select-none' : ''}>
             {city.cityName}, {city.country}
-            {city.hasIncompleteData && (
-              <AlertTriangle className="h-3.5 w-3.5 text-amber-500 inline ml-1" />
-            )}
-          </td>
-        )}
+          </span>
+          {city.hasIncompleteData && isPaid && (
+            <AlertTriangle className="h-3.5 w-3.5 text-amber-500 inline ml-1" />
+          )}
+        </td>
         <td className="px-4 py-3 text-sm text-slate-700">
           {formatCurrency(city.totalCost)}
         </td>
@@ -110,11 +103,13 @@ function CityRow({
         <td className="px-4 py-3 text-sm text-slate-500">
           {formatDate(city.bestDate)}
         </td>
-        {isPaid && (
-          <td className="px-4 py-3 text-sm text-slate-400">
-            {isExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-          </td>
-        )}
+        <td className="px-4 py-3 text-sm text-slate-400">
+          {isPaid ? (
+            isExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />
+          ) : (
+            <Lock className="h-3.5 w-3.5" />
+          )}
+        </td>
       </tr>
       {isExpanded && isPaid && (
         <tr>

@@ -18,15 +18,15 @@ const plans = [
   },
   {
     name: 'Full Report',
-    price: '49',
+    price: null,
     description: 'Unlock complete results with exact booking recommendations.',
     features: [
       'Everything in Free',
       'Exact optimal city revealed',
       'Best travel date',
       'Per-person booking recommendations',
-      'Full 55-city ranking',
-      'Exportable report',
+      'Full city ranking with booking links',
+      'Direct booking links for every route',
     ],
     cta: 'Start Free, Pay Later',
     variant: 'primary' as const,
@@ -65,9 +65,12 @@ export function Pricing() {
               )}
               <h3 className="text-xl font-bold text-slate-900 mb-2">{plan.name}</h3>
               <div className="mb-4">
-                <span className="text-4xl font-bold text-slate-900">&euro;{plan.price}</span>
-                {plan.price !== '0' && (
-                  <span className="text-slate-500 ml-1">/ analysis</span>
+                {plan.price !== null ? (
+                  <span className="text-4xl font-bold text-slate-900">&euro;{plan.price}</span>
+                ) : (
+                  <>
+                    <span className="text-4xl font-bold text-slate-900">Pay-per-savings</span>
+                  </>
                 )}
               </div>
               <p className="text-slate-600 mb-6">{plan.description}</p>

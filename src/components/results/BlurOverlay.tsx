@@ -4,10 +4,11 @@ import { formatCurrency } from '../../utils/formatCurrency'
 
 interface BlurOverlayProps {
   savingsVsBudget: number
+  unlockPrice: number
   onUnlock: () => void
 }
 
-export function BlurOverlay({ savingsVsBudget, onUnlock }: BlurOverlayProps) {
+export function BlurOverlay({ savingsVsBudget, unlockPrice, onUnlock }: BlurOverlayProps) {
   return (
     <div className="bg-gradient-to-br from-blue-600 to-indigo-700 rounded-xl p-8 text-white text-center mb-6">
       <div className="mx-auto w-16 h-16 bg-white/10 backdrop-blur-sm rounded-full flex items-center justify-center mb-4">
@@ -25,7 +26,7 @@ export function BlurOverlay({ savingsVsBudget, onUnlock }: BlurOverlayProps) {
         onClick={onUnlock}
       >
         <Sparkles className="h-5 w-5 mr-2" />
-        Unlock for &euro;49
+        Unlock for {formatCurrency(unlockPrice)}
       </Button>
       <p className="text-xs text-blue-200 mt-3">
         One-time payment. No subscription. Instant access.

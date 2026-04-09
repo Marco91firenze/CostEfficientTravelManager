@@ -9,7 +9,7 @@ const steps = [
   {
     icon: Brain,
     title: '2. AI Optimizes',
-    description: 'Our algorithm evaluates 30,000+ route-date combinations across 55 European cities to minimize total travel costs.',
+    description: 'Our algorithm queries real-time prices across 150+ cities worldwide to find the destination with the lowest total travel cost.',
   },
   {
     icon: MapPin,

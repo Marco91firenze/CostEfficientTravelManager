@@ -3,8 +3,8 @@ import { MapPin, Calendar, PiggyBank, BarChart3, Users, Zap } from 'lucide-react
 const features = [
   {
     icon: MapPin,
-    title: '55+ European Cities',
-    description: 'Major hubs and regional destinations analyzed, from London to Athens.',
+    title: '150+ Cities Worldwide',
+    description: 'Global coverage across Europe, Americas, Asia-Pacific, Middle East, and Africa.',
   },
   {
     icon: Calendar,
@@ -42,7 +42,7 @@ export function Features() {
             Everything You Need to Optimize Travel Costs
           </h2>
           <p className="text-lg text-slate-600 max-w-2xl mx-auto">
-            Built specifically for travel managers organizing corporate events across Europe.
+            Built specifically for travel managers organizing corporate events anywhere in the world.
           </p>
         </div>
         <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-8">
