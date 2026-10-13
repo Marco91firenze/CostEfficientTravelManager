@@ -3,17 +3,42 @@ import type { CityRanking, BookingRecommendation, OptimizationResult } from '../
 import type { RouteEstimate } from '../types/estimation'
 import { CITIES, getCityById } from './cities'
 import { haversineDistance } from './haversine'
-import { searchRoute, generateGoogleFlightsLink, throttledMap } from '../lib/amadeus'
+import { searchRouteBatch, generateGoogleFlightsLink, throttledMap } from '../lib/amadeus'
 
-interface RouteQuery {
+// Only consider cities within this radius of the offices centroid
+const MAX_CANDIDATE_DISTANCE_KM = 4000
+
+// Max routes per claude CLI call (fits safely within --max-turns 12)
+const MAX_BATCH_SIZE = 5
+
+function computeCentroid(offices: Office[]): { lat: number; lng: number } {
+  const totalParticipants = offices.reduce((s, o) => s + o.participantCount, 0)
+  if (totalParticipants === 0) {
+    const n = offices.length
+    return {
+      lat: offices.reduce((s, o) => s + (getCityById(o.cityId)?.lat ?? 0), 0) / n,
+      lng: offices.reduce((s, o) => s + (getCityById(o.cityId)?.lng ?? 0), 0) / n,
+    }
+  }
+  return {
+    lat: offices.reduce((s, o) => s + (getCityById(o.cityId)?.lat ?? 0) * o.participantCount, 0) / totalParticipants,
+    lng: offices.reduce((s, o) => s + (getCityById(o.cityId)?.lng ?? 0) * o.participantCount, 0) / totalParticipants,
+  }
+}
+
+interface OfficeRoute {
   office: Office
+  distanceKm: number
+  googleLink: string
+  flyFrom: string
+  flyTo: string
+}
+
+interface CityBatch {
   destCityId: string
   destCityName: string
   destCountry: string
-  destAirportCode: string
-  originAirportCode: string
-  dateFrom: string
-  dateTo: string
+  officeRoutes: OfficeRoute[]
 }
 
 export async function runOptimization(
@@ -25,167 +50,150 @@ export async function runOptimization(
   onProgress?: (completed: number, total: number, currentCity: string) => void
 ): Promise<OptimizationResult> {
   const originCityIds = new Set(offices.map(o => o.cityId))
-  const candidateCities = CITIES.filter(c => !originCityIds.has(c.id))
   const totalParticipants = offices.reduce((sum, o) => sum + o.participantCount, 0)
 
-  // Build all route queries
-  const routeQueries: RouteQuery[] = []
-  for (const destCity of candidateCities) {
-    for (const office of offices) {
-      const originCity = getCityById(office.cityId)
-      if (!originCity) continue
-      routeQueries.push({
-        office,
-        destCityId: destCity.id,
-        destCityName: destCity.name,
-        destCountry: destCity.country,
-        destAirportCode: destCity.airportCode,
-        originAirportCode: originCity.airportCode,
-        dateFrom: dateRangeStart,
-        dateTo: dateRangeEnd,
-      })
-    }
-  }
-
-  const totalRoutes = routeQueries.length
-
-  // Query Amadeus for all routes with throttling (4 concurrent)
-  const routeResults = await throttledMap(
-    routeQueries,
-    async (query) => {
-      const originCity = getCityById(query.office.cityId)!
-      const destCity = CITIES.find(c => c.id === query.destCityId)!
-      const distanceKm = haversineDistance(originCity.lat, originCity.lng, destCity.lat, destCity.lng)
-
-      const googleLink = generateGoogleFlightsLink(
-        query.originAirportCode,
-        query.destAirportCode,
-        query.dateFrom,
-        query.dateTo
-      )
-
-      try {
-        const result = await searchRoute(
-          query.originAirportCode,
-          query.destAirportCode,
-          query.dateFrom,
-          query.dateTo
-        )
-
-        if (result) {
-          const route: RouteEstimate = {
-            originCityId: query.office.cityId,
-            originCityName: query.office.cityName,
-            destinationCityId: query.destCityId,
-            destinationCityName: query.destCityName,
-            distanceKm,
-            recommendedMode: result.transportType,
-            estimatedCostPerPerson: result.price,
-            estimatedDurationMinutes: result.durationMinutes,
-            participantCount: query.office.participantCount,
-            totalCostForRoute: result.price * query.office.participantCount,
-            bookingLink: result.bookingLink,
-            fallbackSearchLink: googleLink,
-            carrier: result.carrier,
-            stops: result.stops,
-            departureDate: result.departureDate,
-            returnDate: result.returnDate,
-            isRealPrice: true,
-          }
-          return { query, route, found: true as const }
-        }
-      } catch {
-        // API error - fall through to not-found
-      }
-
-      // No result from Amadeus - mark as incomplete
-      const fallbackRoute: RouteEstimate = {
-        originCityId: query.office.cityId,
-        originCityName: query.office.cityName,
-        destinationCityId: query.destCityId,
-        destinationCityName: query.destCityName,
-        distanceKm,
-        recommendedMode: 'flight',
-        estimatedCostPerPerson: 0,
-        estimatedDurationMinutes: 0,
-        participantCount: query.office.participantCount,
-        totalCostForRoute: 0,
-        bookingLink: '',
-        fallbackSearchLink: googleLink,
-        carrier: 'N/A',
-        stops: 0,
-        departureDate: query.dateFrom,
-        returnDate: query.dateTo,
-        isRealPrice: false,
-      }
-      return { query, route: fallbackRoute, found: false as const }
-    },
-    4,
-    (completed) => {
-      const currentQuery = routeQueries[Math.min(completed, routeQueries.length - 1)]
-      onProgress?.(completed, totalRoutes, currentQuery?.destCityName || '')
-    }
+  // Geo pre-filter: only cities within 4000km of the weighted centroid of offices
+  const centroid = computeCentroid(offices)
+  const candidateCities = CITIES.filter(c =>
+    !originCityIds.has(c.id) &&
+    haversineDistance(centroid.lat, centroid.lng, c.lat, c.lng) <= MAX_CANDIDATE_DISTANCE_KM
   )
 
-  // Group routes by destination city
-  const cityRouteMap = new Map<string, { routes: RouteEstimate[]; hasIncomplete: boolean }>()
-  for (const result of routeResults) {
-    const key = result.query.destCityId
-    if (!cityRouteMap.has(key)) {
-      cityRouteMap.set(key, { routes: [], hasIncomplete: false })
-    }
-    const entry = cityRouteMap.get(key)!
-    entry.routes.push(result.route)
-    if (!result.found) {
-      entry.hasIncomplete = true
-    }
-  }
+  const totalCities = candidateCities.length
 
-  // Build city rankings
-  const cityRankings: CityRanking[] = []
-  for (const [cityId, { routes, hasIncomplete }] of cityRouteMap) {
-    const destCity = CITIES.find(c => c.id === cityId)!
-    const totalCost = routes.reduce((sum, r) => sum + r.totalCostForRoute, 0)
-
-    // Determine best date from the most common departure date
-    const dateCounts = new Map<string, number>()
-    for (const r of routes) {
-      if (r.isRealPrice) {
-        dateCounts.set(r.departureDate, (dateCounts.get(r.departureDate) || 0) + r.participantCount)
-      }
-    }
-    let bestDate = dateRangeStart
-    let bestDateCount = 0
-    for (const [date, count] of dateCounts) {
-      if (count > bestDateCount) {
-        bestDateCount = count
-        bestDate = date
-      }
-    }
-
-    cityRankings.push({
-      cityId,
-      cityName: destCity.name,
-      country: destCity.country,
-      totalCost,
-      averageCostPerPerson: totalParticipants > 0 ? Math.round(totalCost / totalParticipants) : 0,
-      bestDate,
-      routeBreakdown: routes,
-      hasIncompleteData: hasIncomplete,
+  // Build city-level batch entries (all office routes to each destination city)
+  const cityBatches: CityBatch[] = candidateCities.map(destCity => {
+    const officeRoutes: OfficeRoute[] = offices.flatMap(office => {
+      const originCity = getCityById(office.cityId)
+      if (!originCity) return []
+      return [{
+        office,
+        distanceKm: haversineDistance(originCity.lat, originCity.lng, destCity.lat, destCity.lng),
+        googleLink: generateGoogleFlightsLink(originCity.airportCode, destCity.airportCode, dateRangeStart, dateRangeEnd),
+        flyFrom: originCity.airportCode,
+        flyTo: destCity.airportCode,
+      }]
     })
-  }
+    return { destCityId: destCity.id, destCityName: destCity.name, destCountry: destCity.country, officeRoutes }
+  })
 
-  // Sort: complete data first (by cost), incomplete data last (by cost)
+  let completedCities = 0
+
+  // Process city batches concurrently (12 concurrent subprocess calls)
+  const cityRankings: CityRanking[] = await throttledMap(
+    cityBatches,
+    async (batch) => {
+      // Split into sub-batches of MAX_BATCH_SIZE if more offices than limit
+      const routes = batch.officeRoutes.map(r => ({
+        flyFrom: r.flyFrom,
+        flyTo: r.flyTo,
+        dateFrom: dateRangeStart,
+        dateTo: dateRangeEnd,
+      }))
+
+      let allApiResults: (Awaited<ReturnType<typeof searchRouteBatch>>[number])[] = []
+      for (let i = 0; i < routes.length; i += MAX_BATCH_SIZE) {
+        const sub = await searchRouteBatch(routes.slice(i, i + MAX_BATCH_SIZE))
+        allApiResults = allApiResults.concat(sub)
+      }
+
+      completedCities++
+      onProgress?.(
+        completedCities * offices.length,
+        totalCities * offices.length,
+        batch.destCityName
+      )
+
+      // Build RouteEstimate array for this city
+      const routeBreakdown: RouteEstimate[] = []
+      let hasIncomplete = false
+
+      for (let i = 0; i < batch.officeRoutes.length; i++) {
+        const or = batch.officeRoutes[i]
+        const api = allApiResults[i]
+
+        if (api && typeof api.price === 'number') {
+          routeBreakdown.push({
+            originCityId: or.office.cityId,
+            originCityName: or.office.cityName,
+            destinationCityId: batch.destCityId,
+            destinationCityName: batch.destCityName,
+            distanceKm: or.distanceKm,
+            recommendedMode: 'flight',
+            estimatedCostPerPerson: api.price,
+            estimatedDurationMinutes: api.durationMinutes,
+            participantCount: or.office.participantCount,
+            totalCostForRoute: api.price * or.office.participantCount,
+            bookingLink: api.bookingLink ?? '',
+            fallbackSearchLink: or.googleLink,
+            carrier: api.carrier ?? 'N/A',
+            stops: api.stops ?? 0,
+            departureDate: api.departureDate ?? dateRangeStart,
+            returnDate: api.returnDate ?? dateRangeEnd,
+            isRealPrice: true,
+          })
+        } else {
+          hasIncomplete = true
+          routeBreakdown.push({
+            originCityId: or.office.cityId,
+            originCityName: or.office.cityName,
+            destinationCityId: batch.destCityId,
+            destinationCityName: batch.destCityName,
+            distanceKm: or.distanceKm,
+            recommendedMode: 'flight',
+            estimatedCostPerPerson: 0,
+            estimatedDurationMinutes: 0,
+            participantCount: or.office.participantCount,
+            totalCostForRoute: 0,
+            bookingLink: '',
+            fallbackSearchLink: or.googleLink,
+            carrier: 'N/A',
+            stops: 0,
+            departureDate: dateRangeStart,
+            returnDate: dateRangeEnd,
+            isRealPrice: false,
+          })
+        }
+      }
+
+      const totalCost = routeBreakdown.reduce((s, r) => s + r.totalCostForRoute, 0)
+
+      // Best departure date = most common date weighted by participant count
+      const dateCounts = new Map<string, number>()
+      for (const r of routeBreakdown) {
+        if (r.isRealPrice) {
+          dateCounts.set(r.departureDate, (dateCounts.get(r.departureDate) ?? 0) + r.participantCount)
+        }
+      }
+      let bestDate = dateRangeStart
+      let bestCount = 0
+      for (const [date, count] of dateCounts) {
+        if (count > bestCount) { bestCount = count; bestDate = date }
+      }
+
+      return {
+        cityId: batch.destCityId,
+        cityName: batch.destCityName,
+        country: batch.destCountry,
+        totalCost,
+        averageCostPerPerson: totalParticipants > 0 ? Math.round(totalCost / totalParticipants) : 0,
+        bestDate,
+        routeBreakdown,
+        hasIncompleteData: hasIncomplete,
+      }
+    },
+    12
+  )
+
+  // Sort: complete data first by cost, then incomplete by cost
   cityRankings.sort((a, b) => {
-    if (a.hasIncompleteData !== b.hasIncompleteData) {
-      return a.hasIncompleteData ? 1 : -1
-    }
+    if (a.hasIncompleteData !== b.hasIncompleteData) return a.hasIncompleteData ? 1 : -1
     return a.totalCost - b.totalCost
   })
 
   const bestCity = cityRankings[0]
+  const totalRoutes = totalCities * offices.length
 
-  // Build booking recommendations for the best city
   const bookingRecommendations: BookingRecommendation[] = bestCity.routeBreakdown.map(route => ({
     officeCityId: route.originCityId,
     officeCityName: route.originCityName,

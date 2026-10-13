@@ -1,4 +1,4 @@
-import { useParams, Link, useSearchParams } from 'react-router-dom'
+import { useParams, Link } from 'react-router-dom'
 import { ArrowLeft, TrendingDown } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { ResultsSummary } from '../components/results/ResultsSummary'
@@ -11,11 +11,8 @@ import { supabase } from '../lib/supabase'
 import { useAuth } from '../contexts/AuthContext'
 import type { OptimizationResult } from '../types/results'
 
-const API_BASE = import.meta.env.VITE_API_URL ?? ''
-
 export function ResultsPage() {
   const { id } = useParams<{ id: string }>()
-  const [searchParams] = useSearchParams()
   const { user } = useAuth()
   const [result, setResult] = useState<OptimizationResult | null>(null)
   const [isPaid, setIsPaid] = useState(false)
@@ -38,18 +35,6 @@ export function ResultsPage() {
           setResult(data.data as OptimizationResult)
           setIsPaid(data.is_paid)
           setSavingsVsBudget(data.savings_vs_budget ?? 0)
-          // If returning from Stripe with ?paid=true, re-check DB
-          if (searchParams.get('paid') === 'true' && !data.is_paid) {
-            // Webhook may still be processing; poll once after 2s
-            setTimeout(async () => {
-              const { data: refreshed } = await supabase
-                .from('results')
-                .select('is_paid')
-                .eq('id', id)
-                .single()
-              if (refreshed?.is_paid) setIsPaid(true)
-            }, 2000)
-          }
           return
         }
       }
@@ -69,38 +54,19 @@ export function ResultsPage() {
     }
 
     load()
-  }, [id, user, searchParams])
+  }, [id, user])
 
+  // Simplified unlock: no payment gateway, just reveal results immediately
   const handleUnlock = async () => {
     if (!id || unlocking) return
     setUnlocking(true)
-
-    // If Stripe not configured, use mock unlock for local dev
-    const stripeKey = import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY ?? ''
-    if (!stripeKey || stripeKey === 'pk_test_placeholder') {
-      sessionStorage.setItem(`paid-${id}`, 'true')
-      setIsPaid(true)
-      setUnlocking(false)
-      return
+    await new Promise(r => setTimeout(r, 700))
+    setIsPaid(true)
+    sessionStorage.setItem(`paid-${id}`, 'true')
+    if (user) {
+      await supabase.from('results').update({ is_paid: true }).eq('id', id)
     }
-
-    try {
-      const res = await fetch(`${API_BASE}/api/create-checkout`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          projectId: id,
-          savingsAmount: savingsVsBudget,
-          userEmail: user?.email,
-        }),
-      })
-      const { url, error } = await res.json()
-      if (error) throw new Error(error)
-      window.location.href = url
-    } catch (err) {
-      console.error('Checkout error:', err)
-      setUnlocking(false)
-    }
+    setUnlocking(false)
   }
 
   if (!result) {

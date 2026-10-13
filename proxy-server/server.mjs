@@ -1,7 +1,12 @@
 /**
  * Local proxy server — calls the `claude` CLI (uses your claude.ai subscription)
  * with the Kiwi.com MCP connector allowed, so real Kiwi flight data flows through.
- * Also handles Stripe Checkout + webhook for the paywall.
+ *
+ * V3 optimizations:
+ *  - Batch endpoint: one subprocess per destination city, searches all offices in one call
+ *  - In-memory route cache (1-hour TTL): skips Kiwi on repeat queries
+ *  - Concurrency raised to 12 on the frontend side
+ *  - Stripe endpoints removed (unlock is now client-side only)
  *
  * Run with: node proxy-server/server.mjs
  */
@@ -43,17 +48,9 @@ if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY &&
   console.log('Supabase admin client initialised')
 }
 
-// ── Stripe client ────────────────────────────────────────────────────────────
-let stripe = null
-if (process.env.STRIPE_SECRET_KEY && !process.env.STRIPE_SECRET_KEY.includes('placeholder')) {
-  try {
-    const { default: Stripe } = await import('stripe')
-    stripe = new Stripe(process.env.STRIPE_SECRET_KEY)
-    console.log('Stripe client initialised')
-  } catch {
-    console.warn('stripe package not installed — payment endpoints disabled. Run: npm install stripe')
-  }
-}
+// ── In-memory route cache ────────────────────────────────────────────────────
+const routeCache = new Map() // key: `${from}:${to}:${dateFrom}:${dateTo}`
+const CACHE_TTL = 60 * 60 * 1000 // 1 hour
 
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173'
 
@@ -61,23 +58,22 @@ const app = express()
 app.use(cors({
   origin: [
     'http://localhost:5173',
+    'http://localhost:5174',
     'http://localhost:4173',
     FRONTEND_URL,
   ],
 }))
-
-// Raw body needed for Stripe webhook signature verification
-app.use('/api/stripe-webhook', express.raw({ type: 'application/json' }))
 app.use(express.json())
 
 const KIWI_TOOL = 'mcp__2854519a-df1e-46f5-954e-28d76adeecbf__search-flight'
 
-async function searchFlight(flyFrom, flyTo, dateFrom, dateTo, currency) {
-  const toKiwiDate = (iso) => {
-    const [y, m, d] = iso.split('-')
-    return `${d}/${m}/${y}`
-  }
+const toKiwiDate = (iso) => {
+  const [y, m, d] = iso.split('-')
+  return `${d}/${m}/${y}`
+}
 
+// ── Single-route search (legacy / fallback) ──────────────────────────────────
+async function searchFlight(flyFrom, flyTo, dateFrom, dateTo) {
   const depKiwi = toKiwiDate(dateFrom)
   const retRange = dateTo && dateTo !== dateFrom ? toKiwiDate(dateTo) : null
 
@@ -116,6 +112,96 @@ After getting results, respond with ONLY a raw JSON object (no markdown fences, 
   return result
 }
 
+// ── Batch-route search (V3 — one subprocess per destination city) ────────────
+async function searchFlightsBatch(routes) {
+  const results = new Array(routes.length).fill(null)
+  const needsSearch = []
+
+  // Pre-fill same-city (price=0) and cache hits
+  for (let i = 0; i < routes.length; i++) {
+    const r = routes[i]
+    if (r.flyFrom === r.flyTo) {
+      results[i] = {
+        price: 0, bookingLink: '', departureDate: r.dateFrom, returnDate: r.dateTo,
+        durationMinutes: 0, carrier: 'Local', stops: 0, transportType: 'flight',
+      }
+      continue
+    }
+    const cacheKey = `${r.flyFrom}:${r.flyTo}:${r.dateFrom}:${r.dateTo}`
+    const cached = routeCache.get(cacheKey)
+    if (cached && Date.now() - cached.ts < CACHE_TTL) {
+      results[i] = cached.result
+      console.log(`  Cache hit: ${r.flyFrom}→${r.flyTo}`)
+    } else {
+      needsSearch.push({ ...r, originalIndex: i })
+    }
+  }
+
+  if (needsSearch.length === 0) return results
+
+  // Build multi-route prompt
+  const routeLines = needsSearch.map((r, idx) => {
+    const dep = toKiwiDate(r.dateFrom)
+    const ret = r.dateTo && r.dateTo !== r.dateFrom ? `, latest ${toKiwiDate(r.dateTo)}` : ''
+    return `${idx + 1}. ${r.flyFrom} → ${r.flyTo}: depart ${dep}${ret}`
+  }).join('\n')
+
+  const prompt = `Search for the cheapest round-trip flight for 1 adult on each route. Call the search-flight tool once per route (sort="price", one_for_city=false).
+
+Routes:
+${routeLines}
+
+After searching ALL routes, respond with ONLY a JSON array (no markdown fences, no explanation), one object per route in the same order:
+[{"price":<number>,"carrier":"<string>","stops":<integer>,"durationMinutes":<integer>,"bookingLink":"<string>","departureDate":"YYYY-MM-DD","returnDate":"YYYY-MM-DD","transportType":"flight"},...]
+Use null for any route with no available flights.`
+
+  console.log(`Batch search: ${needsSearch.map(r => `${r.flyFrom}→${r.flyTo}`).join(', ')}`)
+
+  try {
+    const { stdout } = await execFileAsync('claude', [
+      '--print', prompt,
+      '--allowedTools', KIWI_TOOL,
+      '--output-format', 'json',
+      '--max-turns', '12',
+    ], {
+      timeout: 120_000,
+      env: process.env,
+    })
+
+    let text = ''
+    try {
+      const envelope = JSON.parse(stdout.trim())
+      text = envelope.result ?? envelope.text ?? stdout
+    } catch {
+      text = stdout
+    }
+
+    // Extract JSON array — try greedy match first, then non-greedy
+    const arrayMatch = text.match(/\[[\s\S]*\]/)
+    if (!arrayMatch) {
+      console.error('No JSON array in batch response:', text.slice(0, 400))
+      return results
+    }
+
+    const batchResults = JSON.parse(arrayMatch[0])
+    for (let i = 0; i < needsSearch.length; i++) {
+      const r = needsSearch[i]
+      const res = Array.isArray(batchResults) ? batchResults[i] : null
+      if (res && typeof res.price === 'number') {
+        if (res.price > 1000) res.price = Math.round(res.price / 2)
+        results[r.originalIndex] = res
+        const cacheKey = `${r.flyFrom}:${r.flyTo}:${r.dateFrom}:${r.dateTo}`
+        routeCache.set(cacheKey, { result: res, ts: Date.now() })
+        console.log(`  ${r.flyFrom}→${r.flyTo}: €${res.price} via ${res.carrier}`)
+      }
+    }
+  } catch (err) {
+    console.error('Batch search error:', err.message)
+  }
+
+  return results
+}
+
 // ── Admin: create user (no email confirmation, no rate limit) ────────────────
 app.post('/api/admin/create-user', async (req, res) => {
   if (!supabase) return res.status(503).json({ error: 'Supabase not configured on this server' })
@@ -130,7 +216,22 @@ app.post('/api/admin/create-user', async (req, res) => {
   res.json({ id: data.user.id, email: data.user.email })
 })
 
-// ── Flight search ────────────────────────────────────────────────────────────
+// ── Batch flight search (V3 main path) ───────────────────────────────────────
+app.post('/api/search-flights-batch', async (req, res) => {
+  const { destinations, currency = 'EUR' } = req.body
+  if (!Array.isArray(destinations) || destinations.length === 0) {
+    return res.status(400).json({ error: 'destinations must be a non-empty array' })
+  }
+  try {
+    const results = await searchFlightsBatch(destinations, currency)
+    res.json(results)
+  } catch (err) {
+    console.error('Batch endpoint error:', err.message)
+    res.status(502).json({ error: err.message })
+  }
+})
+
+// ── Single flight search (legacy / fallback) ─────────────────────────────────
 app.post('/api/search-flight', async (req, res) => {
   const { flyFrom, flyTo, dateFrom, dateTo, currency = 'EUR' } = req.body
 
@@ -140,21 +241,24 @@ app.post('/api/search-flight', async (req, res) => {
 
   if (flyFrom === flyTo) {
     return res.json({
-      price: 0,
-      bookingLink: '',
-      departureDate: dateFrom,
-      returnDate: dateTo || dateFrom,
-      durationMinutes: 0,
-      carrier: 'Local',
-      stops: 0,
-      transportType: 'flight',
+      price: 0, bookingLink: '', departureDate: dateFrom, returnDate: dateTo || dateFrom,
+      durationMinutes: 0, carrier: 'Local', stops: 0, transportType: 'flight',
     })
   }
 
+  // Check cache
+  const cacheKey = `${flyFrom}:${flyTo}:${dateFrom}:${dateTo}`
+  const cached = routeCache.get(cacheKey)
+  if (cached && Date.now() - cached.ts < CACHE_TTL) {
+    console.log(`Cache hit: ${flyFrom}→${flyTo}`)
+    return res.json(cached.result)
+  }
+
   try {
-    console.log(`Searching: ${flyFrom} → ${flyTo} | ${dateFrom}–${dateTo}`)
+    console.log(`Single search: ${flyFrom} → ${flyTo} | ${dateFrom}–${dateTo}`)
     const result = await searchFlight(flyFrom, flyTo, dateFrom, dateTo, currency)
     if (!result) return res.json(null)
+    routeCache.set(cacheKey, { result, ts: Date.now() })
     console.log(`Result: €${result.price} via ${result.carrier}`)
     return res.json(result)
   } catch (err) {
@@ -163,85 +267,17 @@ app.post('/api/search-flight', async (req, res) => {
   }
 })
 
-// ── Stripe: create checkout session ─────────────────────────────────────────
-app.post('/api/create-checkout', async (req, res) => {
-  if (!stripe) {
-    return res.status(503).json({ error: 'Stripe not configured on this server' })
-  }
-  const { projectId, savingsAmount, userEmail } = req.body
-  if (!projectId || !savingsAmount) {
-    return res.status(400).json({ error: 'Missing projectId or savingsAmount' })
-  }
-  const fee = Math.max(1, Math.round(savingsAmount * 0.33))
-  try {
-    const session = await stripe.checkout.sessions.create({
-      mode: 'payment',
-      customer_email: userEmail,
-      line_items: [{
-        price_data: {
-          currency: 'eur',
-          product_data: {
-            name: `Unlock your cheapest event city (save ~€${Math.round(savingsAmount)})`,
-          },
-          unit_amount: fee * 100,
-        },
-        quantity: 1,
-      }],
-      success_url: `${FRONTEND_URL}/app/projects/${projectId}?paid=true`,
-      cancel_url: `${FRONTEND_URL}/app/projects/${projectId}`,
-      metadata: { projectId },
-    })
-    res.json({ url: session.url })
-  } catch (err) {
-    console.error('Stripe checkout error:', err.message)
-    res.status(500).json({ error: err.message })
-  }
-})
-
-// ── Stripe: webhook ──────────────────────────────────────────────────────────
-app.post('/api/stripe-webhook', async (req, res) => {
-  if (!stripe) return res.status(503).json({ error: 'Stripe not configured' })
-  if (!supabase) return res.status(503).json({ error: 'Supabase not configured' })
-
-  let event
-  try {
-    event = stripe.webhooks.constructEvent(
-      req.body,
-      req.headers['stripe-signature'],
-      process.env.STRIPE_WEBHOOK_SECRET
-    )
-  } catch (err) {
-    console.error('Webhook signature error:', err.message)
-    return res.status(400).json({ error: err.message })
-  }
-
-  if (event.type === 'checkout.session.completed') {
-    const session = event.data.object
-    const { projectId } = session.metadata
-    await supabase.from('results').update({
-      is_paid: true,
-      stripe_session_id: session.id,
-      fee_charged: session.amount_total / 100,
-      paid_at: new Date().toISOString(),
-    }).eq('id', projectId)
-    await supabase.from('projects').update({ status: 'paid' }).eq('id', projectId)
-    console.log(`Payment confirmed for project ${projectId}`)
-  }
-
-  res.json({ received: true })
-})
-
 // ── Health ───────────────────────────────────────────────────────────────────
 app.get('/health', (_req, res) => res.json({
   status: 'ok',
-  mode: 'claude-cli + kiwi-mcp',
-  stripe: !!stripe,
+  mode: 'claude-cli + kiwi-mcp (v3-batch)',
   supabase: !!supabase,
+  cacheSize: routeCache.size,
 }))
 
 const PORT = process.env.PROXY_PORT || 3001
 app.listen(PORT, () => {
-  console.log(`Flight proxy on http://localhost:${PORT}`)
-  console.log(`Mode: claude CLI → Kiwi MCP (${KIWI_TOOL})`)
-  console.log('No API key needed — uses your claude.ai subscription')
+  console.log(`Flight proxy v3 on http://localhost:${PORT}`)
+  console.log(`Mode: claude CLI batch → Kiwi MCP (${KIWI_TOOL})`)
+  console.log('No API key — uses claude.ai subscription')
 })
