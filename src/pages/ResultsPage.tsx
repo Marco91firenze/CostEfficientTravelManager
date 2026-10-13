@@ -1,4 +1,4 @@
-import { useParams, Link } from 'react-router-dom'
+import { useParams, Link, useSearchParams } from 'react-router-dom'
 import { ArrowLeft, TrendingDown } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { ResultsSummary } from '../components/results/ResultsSummary'
@@ -7,37 +7,99 @@ import { CostBreakdown } from '../components/results/CostBreakdown'
 import { BookingTable } from '../components/results/BookingTable'
 import { BlurOverlay } from '../components/results/BlurOverlay'
 import { Button } from '../components/ui/Button'
+import { supabase } from '../lib/supabase'
+import { useAuth } from '../contexts/AuthContext'
 import type { OptimizationResult } from '../types/results'
+
+const API_BASE = import.meta.env.VITE_API_URL ?? ''
 
 export function ResultsPage() {
   const { id } = useParams<{ id: string }>()
+  const [searchParams] = useSearchParams()
+  const { user } = useAuth()
   const [result, setResult] = useState<OptimizationResult | null>(null)
   const [isPaid, setIsPaid] = useState(false)
-  const [travelBudget, setTravelBudget] = useState(0)
+  const [savingsVsBudget, setSavingsVsBudget] = useState(0)
+  const [unlocking, setUnlocking] = useState(false)
 
   useEffect(() => {
     if (!id) return
-    const stored = sessionStorage.getItem(`result-${id}`)
-    if (stored) {
-      setResult(JSON.parse(stored))
-    }
-    const projectStored = sessionStorage.getItem(`project-${id}`)
-    if (projectStored) {
-      const project = JSON.parse(projectStored)
-      setTravelBudget(project.travelBudget || 0)
-    }
-    const paid = sessionStorage.getItem(`paid-${id}`)
-    if (paid === 'true') {
-      setIsPaid(true)
-    }
-  }, [id])
 
-  const handleUnlock = () => {
-    // In production, this would redirect to Stripe Checkout.
-    // For MVP demo, simulate payment.
-    if (id) {
+    const load = async () => {
+      // Try Supabase first
+      if (user) {
+        const { data } = await supabase
+          .from('results')
+          .select('data, is_paid, savings_vs_budget')
+          .eq('id', id)
+          .single()
+
+        if (data) {
+          setResult(data.data as OptimizationResult)
+          setIsPaid(data.is_paid)
+          setSavingsVsBudget(data.savings_vs_budget ?? 0)
+          // If returning from Stripe with ?paid=true, re-check DB
+          if (searchParams.get('paid') === 'true' && !data.is_paid) {
+            // Webhook may still be processing; poll once after 2s
+            setTimeout(async () => {
+              const { data: refreshed } = await supabase
+                .from('results')
+                .select('is_paid')
+                .eq('id', id)
+                .single()
+              if (refreshed?.is_paid) setIsPaid(true)
+            }, 2000)
+          }
+          return
+        }
+      }
+
+      // Fallback to sessionStorage
+      const stored = sessionStorage.getItem(`result-${id}`)
+      if (stored) {
+        const parsed = JSON.parse(stored) as OptimizationResult
+        setResult(parsed)
+        const projectStored = sessionStorage.getItem(`project-${id}`)
+        if (projectStored) {
+          const project = JSON.parse(projectStored)
+          setSavingsVsBudget(Math.max(0, (project.travelBudget || 0) - parsed.totalCost))
+        }
+        if (sessionStorage.getItem(`paid-${id}`) === 'true') setIsPaid(true)
+      }
+    }
+
+    load()
+  }, [id, user, searchParams])
+
+  const handleUnlock = async () => {
+    if (!id || unlocking) return
+    setUnlocking(true)
+
+    // If Stripe not configured, use mock unlock for local dev
+    const stripeKey = import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY ?? ''
+    if (!stripeKey || stripeKey === 'pk_test_placeholder') {
       sessionStorage.setItem(`paid-${id}`, 'true')
       setIsPaid(true)
+      setUnlocking(false)
+      return
+    }
+
+    try {
+      const res = await fetch(`${API_BASE}/api/create-checkout`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          projectId: id,
+          savingsAmount: savingsVsBudget,
+          userEmail: user?.email,
+        }),
+      })
+      const { url, error } = await res.json()
+      if (error) throw new Error(error)
+      window.location.href = url
+    } catch (err) {
+      console.error('Checkout error:', err)
+      setUnlocking(false)
     }
   }
 
@@ -51,6 +113,8 @@ export function ResultsPage() {
       </div>
     )
   }
+
+  const unlockPrice = Math.round(savingsVsBudget * 0.33)
 
   return (
     <div>
@@ -78,11 +142,14 @@ export function ResultsPage() {
 
       <ResultsSummary result={result} isPaid={isPaid} />
 
-      {!isPaid && (() => {
-        const savings = Math.max(0, travelBudget - result.totalCost)
-        const unlockPrice = Math.round(savings * 0.33)
-        return <BlurOverlay savingsVsBudget={savings} unlockPrice={unlockPrice} onUnlock={handleUnlock} />
-      })()}
+      {!isPaid && (
+        <BlurOverlay
+          savingsVsBudget={savingsVsBudget}
+          unlockPrice={unlockPrice}
+          onUnlock={handleUnlock}
+          loading={unlocking}
+        />
+      )}
 
       <CityRankingTable rankings={result.cityRankings} isPaid={isPaid} />
 

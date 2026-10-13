@@ -1,4 +1,4 @@
-import { Plane, Train, Calendar, ExternalLink } from 'lucide-react'
+import { Plane, Calendar, ExternalLink } from 'lucide-react'
 import { Card } from '../ui/Card'
 import { formatCurrency } from '../../utils/formatCurrency'
 import { formatDate } from '../../utils/formatDate'
@@ -43,12 +43,8 @@ export function BookingTable({ bookings, isPaid }: BookingTableProps) {
             </div>
             <div className="flex flex-wrap items-center gap-3 text-sm text-slate-600">
               <span className="inline-flex items-center gap-1">
-                {b.mode === 'flight' ? (
-                  <Plane className="h-3.5 w-3.5" />
-                ) : (
-                  <Train className="h-3.5 w-3.5" />
-                )}
-                {b.mode === 'flight' ? 'Flight' : 'Train'}
+                <Plane className="h-3.5 w-3.5" />
+                Flight
               </span>
               <span className="inline-flex items-center gap-1">
                 <Calendar className="h-3.5 w-3.5" />

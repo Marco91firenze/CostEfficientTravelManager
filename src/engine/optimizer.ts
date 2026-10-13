@@ -3,7 +3,7 @@ import type { CityRanking, BookingRecommendation, OptimizationResult } from '../
 import type { RouteEstimate } from '../types/estimation'
 import { CITIES, getCityById } from './cities'
 import { haversineDistance } from './haversine'
-import { searchRoute, generateGoogleFlightsLink, generateTrainLink, throttledMap } from '../lib/kiwi'
+import { searchRoute, generateGoogleFlightsLink, throttledMap } from '../lib/amadeus'
 
 interface RouteQuery {
   office: Office
@@ -49,7 +49,7 @@ export async function runOptimization(
 
   const totalRoutes = routeQueries.length
 
-  // Query Kiwi for all routes with throttling (4 concurrent)
+  // Query Amadeus for all routes with throttling (4 concurrent)
   const routeResults = await throttledMap(
     routeQueries,
     async (query) => {
@@ -63,9 +63,6 @@ export async function runOptimization(
         query.dateFrom,
         query.dateTo
       )
-      const trainLink = distanceKm < 700
-        ? generateTrainLink(originCity.name, destCity.name, query.dateFrom)
-        : ''
 
       try {
         const result = await searchRoute(
@@ -101,7 +98,7 @@ export async function runOptimization(
         // API error - fall through to not-found
       }
 
-      // No result from Kiwi - mark as incomplete
+      // No result from Amadeus - mark as incomplete
       const fallbackRoute: RouteEstimate = {
         originCityId: query.office.cityId,
         originCityName: query.office.cityName,
@@ -114,7 +111,7 @@ export async function runOptimization(
         participantCount: query.office.participantCount,
         totalCostForRoute: 0,
         bookingLink: '',
-        fallbackSearchLink: googleLink || trainLink,
+        fallbackSearchLink: googleLink,
         carrier: 'N/A',
         stops: 0,
         departureDate: query.dateFrom,

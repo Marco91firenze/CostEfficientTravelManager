@@ -39,7 +39,7 @@ export function ProcessingStep({ completedRoutes, totalRoutes, currentCity, stat
               Fetching Real-Time Prices...
             </h2>
             <p className="text-slate-600">
-              Querying live flight and train prices for every route.
+              Querying live flight prices for every route.
             </p>
             {currentCity && (
               <p className="text-sm text-blue-600 mt-2 font-medium">

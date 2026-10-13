@@ -1,12 +1,9 @@
-import { createContext, useContext, useState, type ReactNode } from 'react'
-
-interface DemoUser {
-  id: string
-  email: string
-}
+import { createContext, useContext, useState, useEffect, type ReactNode } from 'react'
+import { supabase } from '../lib/supabase'
+import type { User } from '@supabase/supabase-js'
 
 interface AuthContextType {
-  user: DemoUser | null
+  user: User | null
   loading: boolean
   signIn: (email: string, password: string) => Promise<{ error: string | null }>
   signUp: (email: string, password: string) => Promise<{ error: string | null }>
@@ -15,64 +12,47 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined)
 
-function getStoredUsers(): Record<string, string> {
-  try {
-    return JSON.parse(localStorage.getItem('cetm_users') || '{}')
-  } catch {
-    return {}
-  }
-}
-
-function saveStoredUsers(users: Record<string, string>) {
-  localStorage.setItem('cetm_users', JSON.stringify(users))
-}
-
-function getStoredSession(): DemoUser | null {
-  try {
-    const raw = localStorage.getItem('cetm_session')
-    return raw ? JSON.parse(raw) : null
-  } catch {
-    return null
-  }
-}
-
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<DemoUser | null>(getStoredSession)
+  const [user, setUser] = useState<User | null>(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setUser(session?.user ?? null)
+      setLoading(false)
+    })
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null)
+    })
+    return () => subscription.unsubscribe()
+  }, [])
 
   const signUp = async (email: string, password: string) => {
-    const users = getStoredUsers()
-    if (users[email]) {
-      return { error: 'An account with this email already exists' }
-    }
-    users[email] = password
-    saveStoredUsers(users)
-    const demoUser = { id: `user-${Date.now()}`, email }
-    localStorage.setItem('cetm_session', JSON.stringify(demoUser))
-    setUser(demoUser)
-    return { error: null }
+    // Use proxy admin endpoint so no confirmation email is sent (no rate limits)
+    const apiBase = import.meta.env.VITE_API_URL ?? ''
+    const res = await fetch(`${apiBase}/api/admin/create-user`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+    })
+    const json = await res.json()
+    if (json.error) return { error: json.error }
+    // Auto sign-in after account creation
+    const { error } = await supabase.auth.signInWithPassword({ email, password })
+    return { error: error?.message ?? null }
   }
 
   const signIn = async (email: string, password: string) => {
-    const users = getStoredUsers()
-    if (!users[email]) {
-      return { error: 'No account found with this email' }
-    }
-    if (users[email] !== password) {
-      return { error: 'Invalid password' }
-    }
-    const demoUser = { id: `user-${email}`, email }
-    localStorage.setItem('cetm_session', JSON.stringify(demoUser))
-    setUser(demoUser)
-    return { error: null }
+    const { error } = await supabase.auth.signInWithPassword({ email, password })
+    return { error: error?.message ?? null }
   }
 
   const signOut = async () => {
-    localStorage.removeItem('cetm_session')
-    setUser(null)
+    await supabase.auth.signOut()
   }
 
   return (
-    <AuthContext.Provider value={{ user, loading: false, signIn, signUp, signOut }}>
+    <AuthContext.Provider value={{ user, loading, signIn, signUp, signOut }}>
       {children}
     </AuthContext.Provider>
   )

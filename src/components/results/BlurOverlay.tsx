@@ -1,4 +1,4 @@
-import { Lock, Sparkles } from 'lucide-react'
+import { Lock, Sparkles, Loader2 } from 'lucide-react'
 import { Button } from '../ui/Button'
 import { formatCurrency } from '../../utils/formatCurrency'
 
@@ -6,9 +6,10 @@ interface BlurOverlayProps {
   savingsVsBudget: number
   unlockPrice: number
   onUnlock: () => void
+  loading?: boolean
 }
 
-export function BlurOverlay({ savingsVsBudget, unlockPrice, onUnlock }: BlurOverlayProps) {
+export function BlurOverlay({ savingsVsBudget, unlockPrice, onUnlock, loading = false }: BlurOverlayProps) {
   return (
     <div className="bg-gradient-to-br from-blue-600 to-indigo-700 rounded-xl p-8 text-white text-center mb-6">
       <div className="mx-auto w-16 h-16 bg-white/10 backdrop-blur-sm rounded-full flex items-center justify-center mb-4">
@@ -24,9 +25,14 @@ export function BlurOverlay({ savingsVsBudget, unlockPrice, onUnlock }: BlurOver
         size="lg"
         className="bg-white text-blue-700 hover:bg-blue-50 focus:ring-white"
         onClick={onUnlock}
+        disabled={loading}
       >
-        <Sparkles className="h-5 w-5 mr-2" />
-        Unlock for {formatCurrency(unlockPrice)}
+        {loading ? (
+          <Loader2 className="h-5 w-5 mr-2 animate-spin" />
+        ) : (
+          <Sparkles className="h-5 w-5 mr-2" />
+        )}
+        {loading ? 'Redirecting...' : `Unlock for ${formatCurrency(unlockPrice)}`}
       </Button>
       <p className="text-xs text-blue-200 mt-3">
         One-time payment. No subscription. Instant access.

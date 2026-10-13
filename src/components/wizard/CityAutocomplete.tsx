@@ -42,6 +42,20 @@ export function CityAutocomplete({ value, onSelect, placeholder = 'Search city..
     onSelect(city)
   }
 
+  const handleBlur = () => {
+    // Delay so dropdown click fires before we auto-select
+    setTimeout(() => {
+      if (results.length === 0) return
+      const q = query.trim().toLowerCase()
+      const exact = results.find(c => c.name.toLowerCase() === q)
+      if (exact) {
+        handleSelect(exact)
+      } else if (results.length === 1) {
+        handleSelect(results[0])
+      }
+    }, 150)
+  }
+
   return (
     <div ref={wrapperRef} className="relative">
       <input
@@ -55,6 +69,7 @@ export function CityAutocomplete({ value, onSelect, placeholder = 'Search city..
             handleChange(query)
           }
         }}
+        onBlur={handleBlur}
       />
       {isOpen && results.length > 0 && (
         <ul className="absolute z-10 w-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg max-h-60 overflow-auto">

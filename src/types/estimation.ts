@@ -1,4 +1,4 @@
-export type TransportMode = 'flight' | 'train'
+export type TransportMode = 'flight'
 
 export interface RouteEstimate {
   originCityId: string

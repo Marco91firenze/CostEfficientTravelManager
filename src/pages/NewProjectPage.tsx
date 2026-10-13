@@ -6,7 +6,9 @@ import { OfficeMapStep } from '../components/wizard/OfficeMapStep'
 import { ProcessingStep } from '../components/wizard/ProcessingStep'
 import { Card } from '../components/ui/Card'
 import { CITIES } from '../engine/cities'
-import { isKiwiConfigured } from '../lib/kiwi'
+import { isAmadeusConfigured } from '../lib/amadeus'
+import { supabase } from '../lib/supabase'
+import { useAuth } from '../contexts/AuthContext'
 import type { EventType, Office } from '../types/project'
 import type { CandidateCity } from '../types/city'
 
@@ -19,6 +21,7 @@ function genId() {
 
 export function NewProjectPage() {
   const navigate = useNavigate()
+  const { user } = useAuth()
   const [step, setStep] = useState(1)
 
   // Step 1 state
@@ -74,9 +77,9 @@ export function NewProjectPage() {
     if (step !== 3 || optimizationStarted.current) return
     optimizationStarted.current = true
 
-    if (!isKiwiConfigured()) {
+    if (!isAmadeusConfigured()) {
       setProcessingStatus('error')
-      setProcessingError('Kiwi API key is not configured. Add VITE_KIWI_API_KEY to your .env file and restart the dev server.')
+      setProcessingError('Flight search proxy not configured. Start the proxy server with: npm run dev:proxy')
       return
     }
 
@@ -84,7 +87,6 @@ export function NewProjectPage() {
 
     const run = async () => {
       try {
-        // Dynamic import to keep the initial bundle lighter
         const { runOptimization } = await import('../engine/optimizer')
         const result = await runOptimization(
           `proj-${Date.now()}`,
@@ -101,7 +103,30 @@ export function NewProjectPage() {
 
         setProcessingStatus('complete')
 
-        // Store result
+        const savingsVsBudget = Math.max(0, travelBudget - result.totalCost)
+
+        // Persist to Supabase if user logged in
+        if (user) {
+          await supabase.from('projects').insert({
+            id: result.projectId,
+            user_id: user.id,
+            name,
+            event_type: eventType,
+            date_start: dateStart,
+            date_end: dateEnd,
+            travel_budget: travelBudget,
+            offices: validOffices,
+            status: 'completed',
+          })
+          await supabase.from('results').insert({
+            id: result.projectId,
+            data: result,
+            savings_vs_budget: savingsVsBudget,
+            is_paid: false,
+          })
+        }
+
+        // Also keep sessionStorage as local fallback
         sessionStorage.setItem(`result-${result.projectId}`, JSON.stringify(result))
         sessionStorage.setItem(`project-${result.projectId}`, JSON.stringify({
           id: result.projectId,
@@ -115,7 +140,6 @@ export function NewProjectPage() {
           travelBudget,
         }))
 
-        // Navigate to results after a brief pause
         setTimeout(() => navigate(`/app/projects/${result.projectId}`), 800)
       } catch (err) {
         setProcessingStatus('error')
@@ -124,7 +148,7 @@ export function NewProjectPage() {
     }
 
     run()
-  }, [step, dateStart, dateEnd, estimatedRoutes, eventType, name, navigate, travelBudget, validOffices])
+  }, [step, dateStart, dateEnd, estimatedRoutes, eventType, name, navigate, travelBudget, user, validOffices])
 
   return (
     <div>

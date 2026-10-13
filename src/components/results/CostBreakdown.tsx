@@ -1,4 +1,4 @@
-import { Plane, Train, ExternalLink } from 'lucide-react'
+import { Plane, ExternalLink } from 'lucide-react'
 import { Card } from '../ui/Card'
 import { formatCurrency } from '../../utils/formatCurrency'
 import type { RouteEstimate } from '../../types/estimation'
@@ -37,12 +37,8 @@ export function CostBreakdown({ routes, isPaid }: CostBreakdownProps) {
                   </td>
                   <td className="px-4 py-3 text-sm text-slate-700">
                     <span className="inline-flex items-center gap-1">
-                      {route.recommendedMode === 'flight' ? (
-                        <Plane className="h-3.5 w-3.5" />
-                      ) : (
-                        <Train className="h-3.5 w-3.5" />
-                      )}
-                      {route.recommendedMode === 'flight' ? 'Flight' : 'Train'}
+                      <Plane className="h-3.5 w-3.5" />
+                      Flight
                     </span>
                   </td>
                   <td className="px-4 py-3 text-sm text-slate-500">

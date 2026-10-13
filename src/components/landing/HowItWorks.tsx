@@ -14,7 +14,7 @@ const steps = [
   {
     icon: MapPin,
     title: '3. Get Your Results',
-    description: 'Receive the optimal city, best travel date, and specific flight/train booking recommendations for every participant.',
+    description: 'Receive the optimal city, best travel date, and specific flight booking recommendations for every participant.',
   },
 ]
 

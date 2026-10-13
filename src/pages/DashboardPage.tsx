@@ -4,27 +4,35 @@ import { PlusCircle, FolderOpen, Calendar, Users } from 'lucide-react'
 import { Card } from '../components/ui/Card'
 import { Button } from '../components/ui/Button'
 import { Badge } from '../components/ui/Badge'
-import type { Project } from '../types/project'
+import { supabase } from '../lib/supabase'
+import { useAuth } from '../contexts/AuthContext'
+
+interface ProjectRow {
+  id: string
+  name: string
+  event_type: string
+  date_start: string
+  date_end: string
+  offices: Array<{ participantCount: number }>
+  status: string
+  created_at: string
+}
 
 export function DashboardPage() {
-  const [projects, setProjects] = useState<Project[]>([])
+  const { user } = useAuth()
+  const [projects, setProjects] = useState<ProjectRow[]>([])
 
   useEffect(() => {
-    // Load projects from sessionStorage
-    const loaded: Project[] = []
-    for (let i = 0; i < sessionStorage.length; i++) {
-      const key = sessionStorage.key(i)
-      if (key?.startsWith('project-')) {
-        try {
-          loaded.push(JSON.parse(sessionStorage.getItem(key)!))
-        } catch {
-          // skip invalid entries
-        }
-      }
-    }
-    loaded.sort((a, b) => (b.id > a.id ? 1 : -1))
-    setProjects(loaded)
-  }, [])
+    if (!user) return
+    supabase
+      .from('projects')
+      .select('id, name, event_type, date_start, date_end, offices, status, created_at')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false })
+      .then(({ data }) => {
+        if (data) setProjects(data as ProjectRow[])
+      })
+  }, [user])
 
   if (projects.length === 0) {
     return (
@@ -63,6 +71,9 @@ export function DashboardPage() {
 
       <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
         {projects.map((project) => {
+          const totalParticipants = Array.isArray(project.offices)
+            ? project.offices.reduce((s, o) => s + (o.participantCount || 0), 0)
+            : 0
           const statusVariant =
             project.status === 'paid' ? 'success' :
             project.status === 'completed' ? 'info' :
@@ -82,12 +93,12 @@ export function DashboardPage() {
                 <div className="space-y-2 text-sm text-slate-600">
                   <div className="flex items-center gap-2">
                     <Calendar className="h-4 w-4 text-slate-400" />
-                    <span>{project.dateRangeStart} to {project.dateRangeEnd}</span>
+                    <span>{project.date_start} to {project.date_end}</span>
                   </div>
                   <div className="flex items-center gap-2">
                     <Users className="h-4 w-4 text-slate-400" />
                     <span>
-                      {project.totalParticipants} participants from {project.offices?.length || 0} offices
+                      {totalParticipants} participants from {Array.isArray(project.offices) ? project.offices.length : 0} offices
                     </span>
                   </div>
                 </div>

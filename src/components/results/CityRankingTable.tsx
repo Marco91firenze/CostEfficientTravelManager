@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Trophy, ChevronDown, ChevronUp, ExternalLink, Plane, Train, AlertTriangle, Lock } from 'lucide-react'
+import { Trophy, ChevronDown, ChevronUp, ExternalLink, Plane, AlertTriangle, Lock } from 'lucide-react'
 import { Card } from '../ui/Card'
 import { Badge } from '../ui/Badge'
 import { formatCurrency } from '../../utils/formatCurrency'
@@ -125,11 +125,7 @@ function CityRow({
                 >
                   <div className="flex items-center gap-3">
                     <span className="inline-flex items-center gap-1 text-sm text-slate-600">
-                      {route.recommendedMode === 'flight' ? (
-                        <Plane className="h-3.5 w-3.5" />
-                      ) : (
-                        <Train className="h-3.5 w-3.5" />
-                      )}
+                      <Plane className="h-3.5 w-3.5" />
                     </span>
                     <div>
                       <p className="text-sm font-medium text-slate-900">

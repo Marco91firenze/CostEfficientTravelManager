@@ -21,7 +21,7 @@ export function Hero() {
             <span className="text-blue-200">corporate event</span>
           </h1>
           <p className="text-xl text-blue-100 mb-8 max-w-2xl">
-            Our AI analyzes thousands of flight and train combinations to find the
+            Our AI analyzes thousands of flight combinations to find the
             destination where your team's total travel costs are lowest. Insert your
             offices, get the optimal city and date.
           </p>
