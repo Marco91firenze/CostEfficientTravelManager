@@ -5,23 +5,6 @@ import { CITIES, getCityById } from './cities'
 import { haversineDistance } from './haversine'
 import { searchRoute, generateGoogleFlightsLink, throttledMap } from '../lib/amadeus'
 
-const MAX_CANDIDATE_DISTANCE_KM = 4000
-
-function computeCentroid(offices: Office[]): { lat: number; lng: number } {
-  const totalParticipants = offices.reduce((s, o) => s + o.participantCount, 0)
-  if (totalParticipants === 0) {
-    const n = offices.length
-    return {
-      lat: offices.reduce((s, o) => s + (getCityById(o.cityId)?.lat ?? 0), 0) / n,
-      lng: offices.reduce((s, o) => s + (getCityById(o.cityId)?.lng ?? 0), 0) / n,
-    }
-  }
-  return {
-    lat: offices.reduce((s, o) => s + (getCityById(o.cityId)?.lat ?? 0) * o.participantCount, 0) / totalParticipants,
-    lng: offices.reduce((s, o) => s + (getCityById(o.cityId)?.lng ?? 0) * o.participantCount, 0) / totalParticipants,
-  }
-}
-
 interface RouteQuery {
   office: Office
   destCityId: string
@@ -44,12 +27,7 @@ export async function runOptimization(
   const originCityIds = new Set(offices.map(o => o.cityId))
   const totalParticipants = offices.reduce((sum, o) => sum + o.participantCount, 0)
 
-  // Geo pre-filter: only cities within 4000km of weighted offices centroid
-  const centroid = computeCentroid(offices)
-  const candidateCities = CITIES.filter(c =>
-    !originCityIds.has(c.id) &&
-    haversineDistance(centroid.lat, centroid.lng, c.lat, c.lng) <= MAX_CANDIDATE_DISTANCE_KM
-  )
+  const candidateCities = CITIES.filter(c => !originCityIds.has(c.id))
 
   // Build all route queries
   const routeQueries: RouteQuery[] = []
