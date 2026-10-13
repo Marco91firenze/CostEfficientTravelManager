@@ -72,6 +72,24 @@ const toKiwiDate = (iso) => {
   return `${d}/${m}/${y}`
 }
 
+// Extract the first well-formed JSON object from arbitrary text
+function extractFirstJson(text) {
+  const start = text.indexOf('{')
+  if (start === -1) return null
+  let depth = 0
+  for (let i = start; i < text.length; i++) {
+    if (text[i] === '{') depth++
+    else if (text[i] === '}') {
+      depth--
+      if (depth === 0) {
+        try { return JSON.parse(text.slice(start, i + 1)) } catch {}
+        // keep scanning if parse failed (e.g. truncated object earlier in text)
+      }
+    }
+  }
+  return null
+}
+
 // ── Single-route search (legacy / fallback) ──────────────────────────────────
 async function searchFlight(flyFrom, flyTo, dateFrom, dateTo) {
   const depKiwi = toKiwiDate(dateFrom)
@@ -81,34 +99,49 @@ async function searchFlight(flyFrom, flyTo, dateFrom, dateTo) {
 Departure date: ${depKiwi}${retRange ? `, latest departure: ${retRange}` : ''}.
 Use the search-flight tool with sort="price" and one_for_city=false.
 After getting results, respond with ONLY a raw JSON object (no markdown fences, no explanation), matching exactly:
-{"price":<cheapest one-way price as number>,"carrier":"<airline names>","stops":<integer>,"durationMinutes":<integer>,"bookingLink":"<bookingUrl from results>","departureDate":"<YYYY-MM-DD>","returnDate":"<YYYY-MM-DD 2-3 nights later>","transportType":"flight"}`
+{"price":<cheapest round-trip total price in EUR as integer>,"carrier":"<airline names>","stops":<integer>,"durationMinutes":<integer>,"bookingLink":"<bookingUrl from results>","departureDate":"<YYYY-MM-DD>","returnDate":"<YYYY-MM-DD 2-3 nights later>","transportType":"flight"}`
 
-  const { stdout } = await execFileAsync('claude', [
-    '--print', prompt,
-    '--allowedTools', KIWI_TOOL,
-    '--output-format', 'json',
-    '--max-turns', '8',
-  ], {
-    timeout: 90_000,
-    env: process.env,
-  })
+  let rawStdout = ''
+  try {
+    const out = await execFileAsync('claude', [
+      '--print', prompt,
+      '--allowedTools', KIWI_TOOL,
+      '--output-format', 'json',
+      '--max-turns', '8',
+    ], {
+      timeout: 90_000,
+      env: process.env,
+      shell: true,
+    })
+    rawStdout = out.stdout
+  } catch (err) {
+    // Claude CLI may exit non-zero (e.g. hook failure) but stdout still contains the result
+    rawStdout = err.stdout || ''
+    if (!rawStdout) {
+      console.error(`Claude CLI failed with no stdout (${flyFrom}→${flyTo}):`, err.message?.slice(0, 200))
+      return null
+    }
+    console.warn(`Claude CLI non-zero exit for ${flyFrom}→${flyTo}, using stdout anyway`)
+  }
 
   let text = ''
   try {
-    const envelope = JSON.parse(stdout.trim())
-    text = envelope.result ?? envelope.text ?? stdout
+    const envelope = JSON.parse(rawStdout.trim())
+    text = envelope.result ?? envelope.text ?? rawStdout
   } catch {
-    text = stdout
+    text = rawStdout
   }
 
-  const match = text.match(/\{[^{}]*(?:\{[^{}]*\}[^{}]*)?\}/)
-  if (!match) {
-    console.error('No JSON found in Claude output:', text.slice(0, 300))
+  const result = extractFirstJson(text)
+  if (!result) {
+    console.error(`No JSON found for ${flyFrom}→${flyTo}:`, text.slice(0, 400))
     return null
   }
-
-  const result = JSON.parse(match[0])
-  if (result.price > 1000) result.price = Math.round(result.price / 2)
+  if (typeof result.price !== 'number') {
+    console.error(`JSON missing price field for ${flyFrom}→${flyTo}:`, result)
+    return null
+  }
+  console.log(`  ${flyFrom}→${flyTo}: €${result.price} via ${result.carrier}`)
   return result
 }
 
@@ -158,32 +191,41 @@ Use null for any route with no available flights.`
   console.log(`Batch search: ${needsSearch.map(r => `${r.flyFrom}→${r.flyTo}`).join(', ')}`)
 
   try {
-    const { stdout } = await execFileAsync('claude', [
-      '--print', prompt,
-      '--allowedTools', KIWI_TOOL,
-      '--output-format', 'json',
-      '--max-turns', '12',
-    ], {
-      timeout: 120_000,
-      env: process.env,
-    })
+    let rawStdout = ''
+    try {
+      const out = await execFileAsync('claude', [
+        '--print', prompt,
+        '--allowedTools', KIWI_TOOL,
+        '--output-format', 'json',
+        '--max-turns', '12',
+      ], {
+        timeout: 120_000,
+        env: process.env,
+        shell: true,
+      })
+      rawStdout = out.stdout
+    } catch (err) {
+      rawStdout = err.stdout || ''
+      if (!rawStdout) throw err
+      console.warn('Batch: Claude CLI non-zero exit, using stdout anyway')
+    }
 
     let text = ''
     try {
-      const envelope = JSON.parse(stdout.trim())
-      text = envelope.result ?? envelope.text ?? stdout
+      const envelope = JSON.parse(rawStdout.trim())
+      text = envelope.result ?? envelope.text ?? rawStdout
     } catch {
-      text = stdout
+      text = rawStdout
     }
 
-    // Extract JSON array — try greedy match first, then non-greedy
-    const arrayMatch = text.match(/\[[\s\S]*\]/)
-    if (!arrayMatch) {
+    const arrStart = text.indexOf('[')
+    const arrEnd = text.lastIndexOf(']')
+    if (arrStart === -1 || arrEnd === -1) {
       console.error('No JSON array in batch response:', text.slice(0, 400))
       return results
     }
 
-    const batchResults = JSON.parse(arrayMatch[0])
+    const batchResults = JSON.parse(text.slice(arrStart, arrEnd + 1))
     for (let i = 0; i < needsSearch.length; i++) {
       const r = needsSearch[i]
       const res = Array.isArray(batchResults) ? batchResults[i] : null

@@ -41,6 +41,7 @@ export function NewProjectPage() {
   const [completedRoutes, setCompletedRoutes] = useState(0)
   const [totalRoutes, setTotalRoutes] = useState(0)
   const [currentCity, setCurrentCity] = useState('')
+  const [bestSavingsPct, setBestSavingsPct] = useState<number | undefined>(undefined)
   const [processingStatus, setProcessingStatus] = useState<'searching' | 'complete' | 'error'>('searching')
   const [processingError, setProcessingError] = useState('')
   const optimizationStarted = useRef(false)
@@ -94,10 +95,11 @@ export function NewProjectPage() {
           dateStart,
           dateEnd,
           travelBudget,
-          (completed, total, city) => {
+          (completed, total, city, savingsPct) => {
             setCompletedRoutes(completed)
             setTotalRoutes(total)
             setCurrentCity(city)
+            if (savingsPct !== undefined) setBestSavingsPct(savingsPct)
           }
         )
 
@@ -196,6 +198,8 @@ export function NewProjectPage() {
             currentCity={currentCity}
             status={processingStatus}
             error={processingError}
+            bestSavingsPct={bestSavingsPct}
+            travelBudget={travelBudget}
           />
         )}
       </Card>

@@ -22,10 +22,11 @@ export async function runOptimization(
   dateRangeStart: string,
   dateRangeEnd: string,
   travelBudget: number,
-  onProgress?: (completed: number, total: number, currentCity: string) => void
+  onProgress?: (completed: number, total: number, currentCity: string, bestSavingsPct?: number) => void
 ): Promise<OptimizationResult> {
   const originCityIds = new Set(offices.map(o => o.cityId))
   const totalParticipants = offices.reduce((sum, o) => sum + o.participantCount, 0)
+  const officeCount = offices.length
 
   const candidateCities = CITIES.filter(c => !originCityIds.has(c.id))
 
@@ -50,7 +51,11 @@ export async function runOptimization(
 
   const totalRoutes = routeQueries.length
 
-  // Query routes with concurrency 12 (was 4)
+  // Track per-city partial costs for live savings display
+  const cityProgress = new Map<string, { costSum: number; routeCount: number }>()
+  let bestCompleteCost = Infinity
+
+  // Query routes with concurrency 12
   const routeResults = await throttledMap(
     routeQueries,
     async (query) => {
@@ -64,6 +69,9 @@ export async function runOptimization(
         query.dateTo
       )
 
+      let route: RouteEstimate
+      let found: boolean
+
       try {
         const result = await searchRoute(
           query.originAirportCode,
@@ -73,7 +81,7 @@ export async function runOptimization(
         )
 
         if (result) {
-          const route: RouteEstimate = {
+          route = {
             originCityId: query.office.cityId,
             originCityName: query.office.cityName,
             destinationCityId: query.destCityId,
@@ -92,37 +100,50 @@ export async function runOptimization(
             returnDate: result.returnDate,
             isRealPrice: result.price > 0,
           }
-          return { query, route, found: true as const }
+          found = true
+        } else {
+          throw new Error('null result')
         }
       } catch {
-        // fall through to not-found
+        route = {
+          originCityId: query.office.cityId,
+          originCityName: query.office.cityName,
+          destinationCityId: query.destCityId,
+          destinationCityName: query.destCityName,
+          distanceKm,
+          recommendedMode: 'flight',
+          estimatedCostPerPerson: 0,
+          estimatedDurationMinutes: 0,
+          participantCount: query.office.participantCount,
+          totalCostForRoute: 0,
+          bookingLink: '',
+          fallbackSearchLink: googleLink,
+          carrier: 'N/A',
+          stops: 0,
+          departureDate: query.dateFrom,
+          returnDate: query.dateTo,
+          isRealPrice: false,
+        }
+        found = false
       }
 
-      const fallbackRoute: RouteEstimate = {
-        originCityId: query.office.cityId,
-        originCityName: query.office.cityName,
-        destinationCityId: query.destCityId,
-        destinationCityName: query.destCityName,
-        distanceKm,
-        recommendedMode: 'flight',
-        estimatedCostPerPerson: 0,
-        estimatedDurationMinutes: 0,
-        participantCount: query.office.participantCount,
-        totalCostForRoute: 0,
-        bookingLink: '',
-        fallbackSearchLink: googleLink,
-        carrier: 'N/A',
-        stops: 0,
-        departureDate: query.dateFrom,
-        returnDate: query.dateTo,
-        isRealPrice: false,
+      // Update per-city progress for live savings tracking
+      const prev = cityProgress.get(query.destCityId) ?? { costSum: 0, routeCount: 0 }
+      const updated = { costSum: prev.costSum + route.totalCostForRoute, routeCount: prev.routeCount + 1 }
+      cityProgress.set(query.destCityId, updated)
+      if (updated.routeCount === officeCount && updated.costSum < bestCompleteCost) {
+        bestCompleteCost = updated.costSum
       }
-      return { query, route: fallbackRoute, found: false as const }
+
+      return { query, route, found: found as boolean } as { query: RouteQuery; route: RouteEstimate; found: boolean }
     },
     12,
     (completed) => {
       const currentQuery = routeQueries[Math.min(completed, routeQueries.length - 1)]
-      onProgress?.(completed, totalRoutes, currentQuery?.destCityName || '')
+      const savingsPct = bestCompleteCost < Infinity && travelBudget > 0
+        ? Math.max(0, Math.round((1 - bestCompleteCost / travelBudget) * 100))
+        : undefined
+      onProgress?.(completed, totalRoutes, currentQuery?.destCityName || '', savingsPct)
     }
   )
 
