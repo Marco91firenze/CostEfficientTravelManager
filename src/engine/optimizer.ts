@@ -69,8 +69,14 @@ export async function runOptimization(
         query.dateTo
       )
 
-      let route: RouteEstimate
-      let found: boolean
+      const trackCity = (totalCostForRoute: number) => {
+        const prev = cityProgress.get(query.destCityId) ?? { costSum: 0, routeCount: 0 }
+        const updated = { costSum: prev.costSum + totalCostForRoute, routeCount: prev.routeCount + 1 }
+        cityProgress.set(query.destCityId, updated)
+        if (updated.routeCount === officeCount && updated.costSum < bestCompleteCost) {
+          bestCompleteCost = updated.costSum
+        }
+      }
 
       try {
         const result = await searchRoute(
@@ -79,39 +85,45 @@ export async function runOptimization(
           query.dateFrom,
           query.dateTo
         )
-
         if (result) {
-          route = {
-            originCityId: query.office.cityId,
-            originCityName: query.office.cityName,
-            destinationCityId: query.destCityId,
-            destinationCityName: query.destCityName,
-            distanceKm,
-            recommendedMode: 'flight',
-            estimatedCostPerPerson: result.price,
-            estimatedDurationMinutes: result.durationMinutes,
-            participantCount: query.office.participantCount,
-            totalCostForRoute: result.price * query.office.participantCount,
-            bookingLink: result.bookingLink,
-            fallbackSearchLink: googleLink,
-            carrier: result.carrier,
-            stops: result.stops,
-            departureDate: result.departureDate,
-            returnDate: result.returnDate,
-            isRealPrice: result.price > 0,
+          const routeCost = result.price * query.office.participantCount
+          trackCity(routeCost)
+          return {
+            query,
+            route: {
+              originCityId: query.office.cityId,
+              originCityName: query.office.cityName,
+              destinationCityId: query.destCityId,
+              destinationCityName: query.destCityName,
+              distanceKm,
+              recommendedMode: 'flight' as const,
+              estimatedCostPerPerson: result.price,
+              estimatedDurationMinutes: result.durationMinutes,
+              participantCount: query.office.participantCount,
+              totalCostForRoute: routeCost,
+              bookingLink: result.bookingLink,
+              fallbackSearchLink: googleLink,
+              carrier: result.carrier,
+              stops: result.stops,
+              departureDate: result.departureDate,
+              returnDate: result.returnDate,
+              isRealPrice: result.price > 0,
+            } satisfies RouteEstimate,
+            found: true,
           }
-          found = true
-        } else {
-          throw new Error('null result')
         }
-      } catch {
-        route = {
+      } catch { /* fall through */ }
+
+      trackCity(0)
+      return {
+        query,
+        route: {
           originCityId: query.office.cityId,
           originCityName: query.office.cityName,
           destinationCityId: query.destCityId,
           destinationCityName: query.destCityName,
           distanceKm,
-          recommendedMode: 'flight',
+          recommendedMode: 'flight' as const,
           estimatedCostPerPerson: 0,
           estimatedDurationMinutes: 0,
           participantCount: query.office.participantCount,
@@ -123,19 +135,9 @@ export async function runOptimization(
           departureDate: query.dateFrom,
           returnDate: query.dateTo,
           isRealPrice: false,
-        }
-        found = false
+        } satisfies RouteEstimate,
+        found: false,
       }
-
-      // Update per-city progress for live savings tracking
-      const prev = cityProgress.get(query.destCityId) ?? { costSum: 0, routeCount: 0 }
-      const updated = { costSum: prev.costSum + route.totalCostForRoute, routeCount: prev.routeCount + 1 }
-      cityProgress.set(query.destCityId, updated)
-      if (updated.routeCount === officeCount && updated.costSum < bestCompleteCost) {
-        bestCompleteCost = updated.costSum
-      }
-
-      return { query, route, found: found as boolean } as { query: RouteQuery; route: RouteEstimate; found: boolean }
     },
     12,
     (completed) => {
